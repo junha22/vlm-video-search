@@ -1,24 +1,28 @@
-# 🎥 자연어 기반 비디오 씬(Scene) 검색기
+# 🎬 IntentCut: 의도 기반 편집 구간 추천 시스템 (VLM Video Search)
 
-이 프로젝트는 **구글 Gemini AI (gemini-3.1-pro)**를 활용하여, 유튜브 링크나 로컬 비디오 파일에서 사용자가 입력한 자연어(예: "사람이 텐트를 치는 장면")와 일치하는 장면의 타임스탬프(시작초 ~ 종료초)를 자동으로 찾아주는 웹 애플리케이션입니다.
+이 프로젝트는 **구글 Gemini AI (gemini-1.5-pro, gemini-2.0-flash 등)**를 활용하여, 유튜브 링크 기반의 영상에서 사용자의 '제작 의도'를 파악해 가장 적합한 편집점(Clip)을 추천해 주는 웹 애플리케이션입니다. 단순한 장면 검색(Moment Retrieval)을 넘어 사용자의 의도를 여러 질의로 확장(Query Expansion)하여 최적의 컷을 찾아냅니다.
+
+기존 Streamlit 단일 구조에서 **FastAPI(백엔드) + Next.js(프론트엔드)** 구조로 전면 리팩토링되어, 향상된 UX와 세련된 다크 테마 UI를 제공합니다.
 
 ## ✨ 주요 기능
-- **다양한 소스 지원**: 유튜브 URL 입력 및 로컬 MP4, MOV, AVI 파일 업로드 지원
-- **고화질 유튜브 다운로드**: `yt-dlp`와 `ffmpeg`를 이용한 고화질 비디오/오디오 병합 다운로드
-- **최신 AI 모델**: 구글 최신 `google-genai` SDK 및 `gemini-3.1-pro` 모델 적용
-- **안정성 (Retry Logic)**: 구글 서버 혼잡 시 (503 에러) 자동으로 3초 대기 후 재시도하는 방어 로직 구현
-- **스마트 클린업**: AI 분석이 끝난 직후, 내 컴퓨터와 구글 클라우드에 올라간 임시 비디오 파일들을 즉시 삭제하여 용량 낭비 방지
+- **제작 의도 기반 검색 & 질의 확장 (Query Expansion)**: "부대 홍보영상 도입부에 쓸 활기찬 훈련 장면"과 같은 의도를 입력하면, 시스템이 다각도로 검색어를 확장하여 영상을 분석합니다.
+- **영상 소스 관리 (Multi-video)**: 여러 유튜브 영상을 업로드하고, 원하는 영상만 선택하여 교차 검색할 수 있습니다.
+- **클립 추천 및 미리보기**: AI가 추천하는 구간(IN/OUT 타임스탬프)과 추천 이유, 신뢰도를 한눈에 확인하고 즉시 재생해 볼 수 있습니다.
+- **고화질 유튜브 다운로드**: `yt-dlp`와 `ffmpeg`를 이용해 고화질로 로컬 임시 다운로드 후 처리합니다.
+- **안정성 및 스마트 클린업**: 503 에러 발생 시 재시도하는 방어 로직과, 분석이 끝난 직후 임시 파일을 클린업하는 로직이 적용되어 있습니다.
 
 ## 🛠 기술 스택
-- **언어**: Python
-- **UI 프레임워크**: Streamlit
-- **비디오 처리**: yt-dlp, ffmpeg
+- **백엔드 (API & 비디오 처리)**: Python, FastAPI, yt-dlp, ffmpeg
+- **프론트엔드 (UI)**: Next.js (App Router), React, Tailwind CSS 스타일 기반 커스텀 CSS (Dark Mode)
 - **AI API**: Google GenAI SDK (`google-genai`)
 
 ## 🚀 설치 및 실행 방법
 
-### 1. 가상 환경 설정 및 패키지 설치
-이 프로젝트는 파이썬 가상 환경(`venv`) 내에서 실행하는 것을 권장합니다.
+이 프로젝트는 **백엔드**와 **프론트엔드** 서버를 각각 실행해야 합니다.
+
+### 1. 백엔드 (FastAPI) 설정 및 실행
+
+가상 환경 설정 및 패키지 설치를 진행합니다.
 
 ```bash
 # 가상 환경 생성
@@ -26,18 +30,15 @@ python -m venv venv
 
 # 가상 환경 활성화 (Windows 기준)
 .\venv\Scripts\activate
-
-# (Mac/Linux의 경우)
-# source venv/bin/activate
+# (Mac/Linux의 경우: source venv/bin/activate)
 
 # 필수 패키지 설치
-pip install -r requirements.txt
+pip install fastapi uvicorn yt-dlp google-genai python-dotenv pydantic
+# 또는 기존 방식대로 pip install -r requirements.txt (fastapi, uvicorn 등 백엔드 패키지 추가 필요)
 ```
 
-### 2. FFmpeg 설치
-유튜브 고화질 영상의 비디오와 오디오 스트림을 완벽하게 병합하기 위해 `ffmpeg`가 필요합니다.
-Windows 사용자의 경우 **PowerShell** 터미널에 아래 명령어 블록을 그대로 복사해서 붙여넣고 엔터를 치면, 알아서 다운로드부터 설치(파일 복사) 및 찌꺼기 파일 삭제까지 자동으로 완료됩니다!
-
+**FFmpeg 설치** (Windows 환경 필수)
+유튜브 고화질 영상 처리를 위해 `ffmpeg`가 필요합니다. PowerShell에서 아래를 실행하세요:
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
 Expand-Archive -Path "ffmpeg.zip" -DestinationPath "." -Force
@@ -46,26 +47,40 @@ Copy-Item ".\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe" -Destination "."
 Remove-Item "ffmpeg.zip"
 Remove-Item -Recurse -Force ".\ffmpeg-master-latest-win64-gpl"
 ```
+*(Mac/Linux 유저는 터미널에 `brew install ffmpeg` 또는 `sudo apt install ffmpeg` 입력)*
 
-위 명령어가 끝나면 프로젝트 폴더 안에 `ffmpeg.exe`와 `ffprobe.exe`가 생성되며, `yt-dlp`가 이를 알아서 찾아 사용하게 됩니다. (Mac/Linux 유저는 터미널에 `brew install ffmpeg` 또는 `sudo apt install ffmpeg`만 치시면 됩니다.)
-
-### 3. 환경 변수 설정 (.env)
-프로젝트 폴더 최상단에 `.env` 파일을 만들고, 본인의 Gemini API Key를 입력합니다.
-*(참고: 깃허브 등 외부 저장소에 올릴 때는 보안을 위해 `.gitignore`에 반드시 `.env`가 등록되어 있어야 합니다.)*
-
+**환경 변수 설정 (.env)**
+프로젝트 최상단에 `.env` 파일을 만들고 API 키를 입력합니다.
 ```env
 GEMINI_API_KEY=당신의_제미나이_API_키를_여기에_입력하세요
 ```
 
-### 4. 앱 실행
-가상 환경이 활성화된 상태에서 아래 명령어를 입력하여 앱을 구동합니다.
+**백엔드 서버 실행**
 ```bash
-streamlit run app.py
+uvicorn backend.main:app --reload --reload-dir backend --port 8000
 ```
-앱이 실행되면 로컬 웹 브라우저가 열리며 (보통 `http://localhost:8501`) 서비스를 이용할 수 있습니다.
+(서버가 `http://localhost:8000`에서 실행됩니다.)
 
-## 📝 사용 방법
-1. **영상 소스 선택**: `유튜브 링크`를 복사해 넣거나, 가지고 있는 `로컬 MP4 파일`을 직접 업로드합니다.
-2. **자연어 쿼리 입력**: 찾고 싶은 장면을 자세히 묘사합니다. (예: "불이 꺼지고 사람들이 박수 치는 장면")
-3. **분석 요청**: `장면 찾기` 버튼을 누르면 AI가 영상을 분석합니다.
-4. **결과 확인**: 처리가 완료되면 해당 장면이 나오는 시작 시간과 종료 시간 텍스트가 화면에 출력됩니다.
+### 2. 프론트엔드 (Next.js) 설정 및 실행
+
+새로운 터미널을 열고 `frontend` 폴더로 이동합니다. (Node.js 설치 필수)
+
+```bash
+cd frontend
+
+# 패키지 설치
+npm install
+
+# 개발 서버 실행
+npm run dev
+```
+(서버가 `http://localhost:3000`에서 실행됩니다.)
+
+### 3. 접속 및 사용
+브라우저에서 `http://localhost:3000`에 접속하여 서비스를 이용합니다.
+
+## 📝 사용 방법 요약
+1. **영상 소스 선택**: 왼쪽 패널에서 유튜브 링크를 추가하고 검색 대상 체크박스를 활성화합니다.
+2. **제작 의도 입력**: 중앙 채팅 패널에서 찾고 싶은 장면의 "의도"를 자연어로 입력하고 전송합니다.
+3. **질의 확장**: AI가 입력된 의도를 바탕으로 세부 검색 질의를 생성하는 과정을 확인합니다.
+4. **추천 클립 확인**: 오른쪽 패널에서 분석이 완료된 클립 목록을 확인하고, 클릭하여 해당 구간을 재생해 봅니다.
