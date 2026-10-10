@@ -5,6 +5,7 @@ import tempfile
 import yt_dlp
 import uuid
 import json
+import re
 from dotenv import load_dotenv
 from google import genai
 
@@ -106,6 +107,39 @@ def poll_video_processing(client, file_name):
         elif video_file.state == "FAILED":
             raise Exception("비디오 처리에 실패했습니다.")
         time.sleep(3)
+
+def resolve_clip_video(clip, candidates):
+    """AI가 돌려준 클립을 검색에 첨부한 영상(candidates, 첨부 순서)과 연결한다."""
+    # 1) 프롬프트에서 각 영상 앞에 붙인 영상 번호 (1부터 시작)
+    try:
+        idx = int(clip.get('video_index')) - 1
+        if 0 <= idx < len(candidates):
+            return candidates[idx]
+    except (TypeError, ValueError):
+        pass
+    name = str(clip.get('video_name', ''))
+    # 2) 영상 이름이 그대로 온 경우
+    match = next((v for v in candidates if v['name'] == name), None)
+    if match:
+        return match
+    # 3) Gemini 내부 첨부 이름으로 온 경우 (input_file_0.mp4 = 첫 번째 첨부 영상)
+    m = re.search(r'input_file_(\d+)', name)
+    if m and int(m.group(1)) < len(candidates):
+        return candidates[int(m.group(1))]
+    # 4) 영상이 하나뿐이면 그 영상
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+def format_timestamp(seconds):
+    """초 단위 값을 분:초 (1시간 이상이면 시:분:초) 문자열로 변환한다. 예: 828 -> 13:48"""
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return str(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 # ----------------- UI Layout (3-Column) -----------------
 col_left, col_mid, col_right = st.columns([1, 2, 1.5], gap="large")
@@ -230,7 +264,7 @@ with col_mid:
                 # Chain-of-Thought 구조의 프롬프트 및 JSON 강제 출력
                 prompt = f"""너는 최고 수준의 영상 편집자이자 AI 분석가야. 
 사용자의 [제작 의도: {user_intent}]를 바탕으로, 첨부된 영상들에서 가장 완벽하게 부합하는 클립을 추천해야 해.
-각 영상의 이름은 파일의 display_name 속성(메타데이터)으로 구분해.
+첨부된 각 영상 바로 앞에는 '[영상 번호: 영상 이름]' 표시가 있어. 클립이 어느 영상에서 나왔는지는 이 번호와 이름으로 구분해.
 
 다음 순서대로 생각하고 분석해:
 {expansion_prompt}
@@ -243,7 +277,8 @@ with col_mid:
   "expanded_queries": ["확장된 질의1", "확장된 질의2", "확장된 질의3"],
   "clips": [
     {{
-      "video_name": "영상의 display_name",
+      "video_index": 영상 번호(정수, 예: 1),
+      "video_name": "영상 이름",
       "start_time": 시작초(정수, 예: 12),
       "end_time": 종료초(정수, 예: 18),
       "reason": "추천 이유",
@@ -252,7 +287,11 @@ with col_mid:
   ]
 }}
 """
-                contents = [v['gemini_file'] for v in selected_vids]
+                # 영상마다 번호/이름 라벨을 앞에 붙여 첨부 (모델은 파일의 display_name을 볼 수 없음)
+                contents = []
+                for i, v in enumerate(selected_vids, start=1):
+                    contents.append(f"[영상 {i}: {v['name']}]")
+                    contents.append(v['gemini_file'])
                 contents.append(prompt)
                 
                 max_retries = 3
@@ -281,7 +320,14 @@ with col_mid:
                 cleaned_text = response_text.replace("```json", "").replace("```", "").strip()
                 try:
                     result_data = json.loads(cleaned_text)
-                    st.session_state.clips = result_data.get('clips', [])
+                    clips = result_data.get('clips', [])
+                    # 검색에 사용한 영상과 연결해 두어, 이후 목록 순서/선택이 바뀌어도 같은 영상을 재생
+                    for clip in clips:
+                        vid = resolve_clip_video(clip, selected_vids)
+                        if vid:
+                            clip['video_id'] = vid['id']
+                            clip['video_name'] = vid['name']
+                    st.session_state.clips = clips
                     
                     st.session_state.chat_history.append({
                         'role': 'assistant',
@@ -308,11 +354,11 @@ with col_right:
             # 클립 카드 컨테이너
             with st.container(border=True):
                 st.markdown(f"#### 🏆 {idx+1}위: `{clip.get('video_name')}`")
-                st.markdown(f"**구간:** `{clip.get('start_time')}초 ~ {clip.get('end_time')}초` ⏱️ | **신뢰도:** {clip.get('confidence')}")
+                st.markdown(f"**구간:** `{format_timestamp(clip.get('start_time'))} ~ {format_timestamp(clip.get('end_time'))}` ⏱️ | **신뢰도:** {clip.get('confidence')}")
                 st.write(clip.get('reason'))
                 
                 # 로컬 비디오 매칭 후 미리보기 재생
-                match_vid = next((v for v in st.session_state.videos if v['name'] == clip.get('video_name')), None)
+                match_vid = next((v for v in st.session_state.videos if v['id'] == clip.get('video_id')), None)
                 if match_vid:
                     try:
                         # start_time을 지정하여 해당 구간부터 재생
