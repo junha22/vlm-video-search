@@ -26,24 +26,59 @@ if "total_tokens" not in st.session_state:
 if "current_model" not in st.session_state:
     st.session_state.current_model = "gemini-3.1-pro"
 
-# ----------------- 사이드바 (설정 및 사용량) -----------------
-with st.sidebar:
-    st.header("⚙️ 시스템 설정")
-    
-    model_options = {
-        "Gemini 3.1 Pro": "gemini-3.1-pro",
-        "Gemini 3.8 Flash": "gemini-3.8-flash",
-        "Gemini 3.8 Flash (에이전틱)": "gemini-3.8-flash-agentic",
-        "Gemini 3.1 Flash-Lite": "gemini-3.1-flash-lite"
+model_options = {
+    "Gemini 3.1 Pro": "gemini-3.1-pro",
+    "Gemini 3.8 Flash": "gemini-3.8-flash",
+    "Gemini 3.8 Flash (에이전틱)": "gemini-3.8-flash-agentic",
+    "Gemini 3.1 Flash-Lite": "gemini-3.1-flash-lite"
+}
+
+# 입력창 하단 상태 바 스타일 (모델 선택 / 토큰 사용량)
+st.html("""
+<style>
+.st-key-input_status_bar {
+    margin-top: -0.75rem;
+    padding: 0 0.25rem;
+    min-height: 0;
+}
+.st-key-input_status_bar [data-testid="stSelectbox"] [role="group"] {
+    min-height: 1.75rem;
+    background-color: transparent;
+    border-color: transparent;
+    opacity: 0.75;
+}
+.st-key-input_status_bar [data-testid="stSelectbox"] [role="group"]:hover,
+.st-key-input_status_bar [data-testid="stSelectbox"] [role="group"]:focus-within {
+    background-color: rgba(128, 128, 128, 0.12);
+    opacity: 1;
+}
+.st-key-input_status_bar [data-testid="stSelectbox"] input {
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+/* 지원 브라우저에서는 드롭다운 폭을 모델명 길이에 맞춘다 (미지원 시 고정 폭 유지) */
+@supports (field-sizing: content) {
+    .st-key-input_status_bar [data-testid="stElementContainer"]:has([data-testid="stSelectbox"]) {
+        flex: 0 0 auto;
+        width: auto;
     }
-    
-    current_idx = list(model_options.values()).index(st.session_state.current_model) if st.session_state.current_model in model_options.values() else 0
-    selected_model_display = st.selectbox("🤖 분석 모델", list(model_options.keys()), index=current_idx)
-    st.session_state.current_model = model_options[selected_model_display]
-    
-    st.markdown("---")
-    st.subheader("📊 API 사용량 (현재 세션)")
-    st.metric(label="누적 사용 토큰 (Total Tokens)", value=f"{st.session_state.total_tokens:,}")
+    .st-key-input_status_bar [data-testid="stSelectbox"] input {
+        field-sizing: content;
+        flex: 0 1 auto;
+        width: auto;
+        min-width: 0;
+    }
+}
+/* 드롭다운 목록은 트리거 폭을 따르므로, 상태 바의 드롭다운이 열렸을 때만 최소 폭을 준다 */
+body:has(.st-key-input_status_bar [role="combobox"][aria-expanded="true"]) [data-testid="stSelectboxVirtualDropdown"] {
+    min-width: 15rem;
+}
+.st-key-input_status_bar [data-testid="stCaptionContainer"] {
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+</style>
+""")
 
 # ----------------- 핵심 로직 함수 -----------------
 def get_client():
@@ -171,6 +206,14 @@ with col_mid:
 
     # 채팅 입력
     user_intent = st.chat_input("예: 부대 홍보영상 도입부에 쓸 활기찬 훈련 장면")
+
+    # 입력창 하단 상태 바: 왼쪽 분석 모델 선택, 오른쪽 누적 토큰
+    with st.container(key="input_status_bar", horizontal=True, horizontal_alignment="distribute", vertical_alignment="center", gap=None):
+        current_idx = list(model_options.values()).index(st.session_state.current_model) if st.session_state.current_model in model_options.values() else 0
+        selected_model_display = st.selectbox("분석 모델", list(model_options.keys()), index=current_idx, label_visibility="collapsed", width=210)
+        st.session_state.current_model = model_options[selected_model_display]
+        st.caption(f"{st.session_state.total_tokens:,} tokens", width="content")
+
     if user_intent:
         selected_vids = [v for v in st.session_state.videos if v['selected']]
         if not selected_vids:
