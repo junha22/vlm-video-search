@@ -49,6 +49,7 @@ export default function ClipPanel({
   onSelect,
   onUpdate,
   onFeedback,
+  locked = false,
 }: {
   clips: Clip[];
   activeId: string | null;
@@ -56,6 +57,7 @@ export default function ClipPanel({
   onSelect: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Clip>) => void;
   onFeedback: (clip: Clip, label: "good" | "bad") => void;
+  locked?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const stopAtOut = useRef(false);
@@ -95,11 +97,21 @@ export default function ClipPanel({
   const pct = (t: number) => (dur ? `${(t / dur) * 100}%` : "0%");
 
   return (
-    <section className="panel" aria-labelledby="clips-title">
+    <section className={`panel ${locked ? "panel-locked" : ""}`} aria-labelledby="clips-title">
       <header className="panel-head">
         <h2 id="clips-title">추천 클립</h2>
         {clips.length > 0 && <span className="badge badge-accent">{clips.length}개 후보</span>}
       </header>
+
+      {locked && (
+        <div className="panel-lock-banner">
+          <span className="lock-icon">🔒</span>
+          <div className="lock-info">
+            <strong>3단계: 추천 결과 대기</strong>
+            <p>왼쪽에서 영상을 선택하고 가운데에서 검색을 진행하면 추천 클립이 표시됩니다.</p>
+          </div>
+        </div>
+      )}
 
       <div className="panel-scroll">
         <div className="player">

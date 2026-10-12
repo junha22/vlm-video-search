@@ -5,8 +5,6 @@ import { IconActivity, IconDashboard, IconLogo, IconSettings } from "./Icons";
 
 export type View = "dashboard" | "settings";
 
-const SOFT_BUDGET = 1_000_000; // 사용량 게이지 기준 (세션당 100만 토큰)
-
 export default function Sidebar({
   view,
   onChange,
@@ -16,8 +14,10 @@ export default function Sidebar({
   onChange: (v: View) => void;
   usage: Usage | null;
 }) {
-  const total = usage?.total_tokens ?? 0;
-  const pct = Math.min(100, (total / SOFT_BUDGET) * 100);
+  const used = usage?.total_tokens ?? 0;
+  const promptTokens = usage?.prompt_tokens ?? 0;
+  const outputTokens = usage?.output_tokens ?? 0;
+  const requests = usage?.requests ?? 0;
 
   return (
     <aside className="sidebar">
@@ -50,19 +50,15 @@ export default function Sidebar({
       <div className="sb-usage">
         <div className="sb-usage-head">
           <span className="sb-usage-title">
-            <IconActivity size={14} /> API 사용량
+            <IconActivity size={14} /> 토큰 사용량
           </span>
-          <span className="badge badge-muted">현재 세션</span>
+          <span className="badge badge-accent">영구 누적</span>
         </div>
-        <div className="sb-usage-value mono">{formatNumber(total)}</div>
-        <div className="sb-usage-label">누적 토큰 (Total Tokens)</div>
-        <div className="sb-bar">
-          <span style={{ width: `${Math.max(pct, total > 0 ? 2 : 0)}%` }} />
-        </div>
+        <div className="sb-usage-value mono">{formatNumber(used)}</div>
+        <div className="sb-usage-label">총 누적 사용 토큰 (Total Tokens)</div>
         <div className="sb-usage-meta">
-          <span>입력 {formatNumber(usage?.prompt_tokens ?? 0)}</span>
-          <span>출력 {formatNumber(usage?.output_tokens ?? 0)}</span>
-          <span>{usage?.requests ?? 0}회</span>
+          <span>입력 {formatNumber(promptTokens)} · 출력 {formatNumber(outputTokens)}</span>
+          <span>{requests}회 호출</span>
         </div>
       </div>
 

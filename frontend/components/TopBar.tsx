@@ -84,13 +84,12 @@ export default function TopBar({
         <span>{subtitle}</span>
       </div>
       <div className="tb-right">
-        <div className={`tb-status ${connected ? "ok" : connected === false ? "bad" : ""}`}>
-          <span className="tb-dot" />
-          {connected ? "서버 연결됨" : connected === false ? "서버 연결 끊김" : "연결 확인 중"}
-        </div>
-        <div className="tb-tokens" title="현재 세션 누적 토큰">
-          <span className="mono">{formatNumber(usage?.total_tokens ?? 0)}</span> tokens
-        </div>
+        {connected === false && (
+          <div className="tb-status bad">
+            <span className="tb-dot" />
+            서버 연결 끊김
+          </div>
+        )}
         {models.length > 0 && <ModelDropdown models={models} value={model} onChange={onModelChange} />}
       </div>
     </header>

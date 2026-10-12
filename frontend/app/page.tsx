@@ -259,6 +259,7 @@ export default function Home() {
               searching={searching}
               selectedCount={selectedIds.length}
               modelLabel={modelLabel}
+              locked={selectedIds.length === 0}
             />
             <ClipPanel
               clips={activeClips}
@@ -267,6 +268,7 @@ export default function Home() {
               onSelect={selectClip}
               onUpdate={updateClip}
               onFeedback={feedback}
+              locked={selectedIds.length === 0}
             />
           </div>
         ) : (

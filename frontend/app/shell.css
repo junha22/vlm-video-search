@@ -336,6 +336,52 @@
   border-radius: var(--radius-lg);
   overflow: hidden;
   backdrop-filter: blur(10px);
+  transition: opacity 0.25s var(--ease), filter 0.25s var(--ease);
+}
+.panel.panel-locked {
+  filter: grayscale(0.4);
+}
+.panel.panel-locked .hero,
+.panel.panel-locked .player,
+.panel.panel-locked .clip-skeletons {
+  opacity: 0.25;
+}
+.panel.panel-locked .composer.disabled {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.05);
+  cursor: not-allowed;
+}
+.panel.panel-locked .composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.panel-lock-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  margin: 12px 14px 6px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(24, 25, 36, 0.95);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+.panel-lock-banner .lock-icon {
+  font-size: 16px;
+  line-height: 1.2;
+}
+.panel-lock-banner .lock-info strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin-bottom: 2px;
+}
+.panel-lock-banner .lock-info p {
+  font-size: 11.5px;
+  color: #94a3b8;
+  line-height: 1.5;
+  margin: 0;
 }
 .panel-head {
   height: 52px;

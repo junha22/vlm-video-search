@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 venv/
 *.exe
+backend/usage.json
+backend/feedback.jsonl

@@ -159,6 +159,7 @@ export default function ChatPanel({
   searching,
   selectedCount,
   modelLabel,
+  locked = false,
 }: {
   messages: Message[];
   expansion: boolean;
@@ -170,6 +171,7 @@ export default function ChatPanel({
   searching: boolean;
   selectedCount: number;
   modelLabel: string;
+  locked?: boolean;
 }) {
   const [text, setText] = useState("");
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -187,6 +189,7 @@ export default function ChatPanel({
   }, [text]);
 
   const submit = (value?: string) => {
+    if (locked) return;
     const v = (value ?? text).trim();
     if (!v || searching) return;
     onSubmit(v);
@@ -194,12 +197,13 @@ export default function ChatPanel({
   };
 
   return (
-    <section className="panel chat" aria-labelledby="chat-title">
+    <section className={`panel chat ${locked ? "panel-locked" : ""}`} aria-labelledby="chat-title">
       <header className="panel-head">
         <h2 id="chat-title">대화형 검색</h2>
         <button
           id="expansion-toggle"
           className="exp-toggle"
+          disabled={locked}
           onClick={() => onExpansionChange(!expansion)}
           title="사용자의 추상적 의도를 AI가 여러 검색 질의로 분해하여 검색 품질을 높입니다."
         >
@@ -208,6 +212,16 @@ export default function ChatPanel({
           <span className={`switch ${expansion ? "on" : ""}`} />
         </button>
       </header>
+
+      {locked && (
+        <div className="panel-lock-banner">
+          <span className="lock-icon">🔒</span>
+          <div className="lock-info">
+            <strong>1단계: 영상 소스 준비 필요</strong>
+            <p>왼쪽 패널에서 유튜브 링크를 추가하거나 파일을 업로드하고, 검색할 영상을 체크해주세요.</p>
+          </div>
+        </div>
+      )}
 
       <div className="chat-body" ref={bodyRef}>
         {messages.length === 0 ? (
@@ -229,7 +243,7 @@ export default function ChatPanel({
             </div>
             <div className="hero-suggest">
               {SUGGESTIONS.map((s) => (
-                <button key={s} className="suggest-chip" onClick={() => submit(s)} disabled={searching}>
+                <button key={s} className="suggest-chip" onClick={() => submit(s)} disabled={searching || locked}>
                   {s}
                 </button>
               ))}
@@ -254,7 +268,7 @@ export default function ChatPanel({
                       <div className="msg-error">{m.error}</div>
                     ) : (
                       <>
-                        <QueryEditor msg={m} disabled={searching} onRerun={onRerun} />
+                        <QueryEditor msg={m} disabled={searching || locked} onRerun={onRerun} />
                         <div className="msg-text">{m.content}</div>
                         {m.clips && m.clips.length > 0 && (
                           <div className={`result-list ${activeMsgId === m.id ? "active" : ""}`}>
@@ -263,7 +277,7 @@ export default function ChatPanel({
                                 <span className={`rank r${c.rank}`}>{c.rank}</span>
                                 <span className="result-name">{c.video_name}</span>
                                 <span className="mono result-time">
-                                  {formatTime(c.start_time)} – {formatTime(c.end_time)}
+                                   {formatTime(c.start_time)} – {formatTime(c.end_time)}
                                 </span>
                               </button>
                             ))}
@@ -281,12 +295,19 @@ export default function ChatPanel({
       </div>
 
       <div className="composer-wrap">
-        <div className={`composer ${searching ? "busy" : ""}`}>
+        <div className={`composer ${searching ? "busy" : ""} ${locked ? "disabled" : ""}`}>
           <textarea
             id="intent-input"
             ref={taRef}
             rows={1}
-            placeholder={messages.length ? "후속 질문을 입력하세요 (예: 좀 더 짧은 컷으로, 야간 장면은 제외)" : "예: 부대 홍보영상 도입부에 쓸 활기찬 훈련 장면"}
+            disabled={locked}
+            placeholder={
+              locked
+                ? "왼쪽 패널에서 검색할 영상을 먼저 추가해주세요"
+                : messages.length
+                ? "후속 질문을 입력하세요 (예: 좀 더 짧은 컷으로, 야간 장면은 제외)"
+                : "예: 부대 홍보영상 도입부에 쓸 활기찬 훈련 장면"
+            }
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
@@ -296,7 +317,7 @@ export default function ChatPanel({
               }
             }}
           />
-          <button id="intent-submit" className="send-btn" disabled={!text.trim() || searching} onClick={() => submit()}>
+          <button id="intent-submit" className="send-btn" disabled={!text.trim() || searching || locked} onClick={() => submit()}>
             {searching ? <span className="spinner" /> : <IconSend size={16} />}
           </button>
         </div>
@@ -304,10 +325,6 @@ export default function ChatPanel({
           <span>
             대상 영상 <b>{selectedCount}</b>개
           </span>
-          <span className="sep" />
-          <span>{modelLabel}</span>
-          <span className="sep" />
-          <span>질의 확장 {expansion ? "ON" : "OFF"}</span>
         </div>
       </div>
     </section>

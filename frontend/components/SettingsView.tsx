@@ -96,25 +96,27 @@ export default function SettingsView({
           <IconActivity size={16} />
           <div>
             <h2>API 사용량</h2>
-            <p>서버가 켜진 뒤부터 누적된 Gemini API 토큰 사용량</p>
+            <p>호출 시마다 자동 저장되어 서버 재시작 후에도 영구 보존되는 토큰 사용량</p>
           </div>
         </div>
         <div className="stat-grid">
           <div className="stat">
-            <span>총 토큰</span>
-            <b className="mono">{formatNumber(usage?.total_tokens ?? 0)}</b>
+            <span>총 누적 사용 토큰</span>
+            <b className="mono" style={{ color: "var(--accent-glow)" }}>
+              {formatNumber(usage?.total_tokens ?? 0)}
+            </b>
           </div>
           <div className="stat">
-            <span>입력 토큰</span>
+            <span>프롬프트 (입력)</span>
             <b className="mono">{formatNumber(usage?.prompt_tokens ?? 0)}</b>
           </div>
           <div className="stat">
-            <span>출력 토큰</span>
+            <span>응답 (출력)</span>
             <b className="mono">{formatNumber(usage?.output_tokens ?? 0)}</b>
           </div>
           <div className="stat">
             <span>요청 수</span>
-            <b className="mono">{formatNumber(usage?.requests ?? 0)}</b>
+            <b className="mono">{formatNumber(usage?.requests ?? 0)}회</b>
           </div>
         </div>
       </section>

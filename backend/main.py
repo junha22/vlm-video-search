@@ -28,6 +28,7 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Uplo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from google import genai
+from google.genai import types
 from pydantic import BaseModel
 
 # ----------------- 환경 설정 -----------------
@@ -46,6 +47,43 @@ else:
 TEMP_DIR = Path(tempfile.gettempdir()) / "intent_clip"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 FEEDBACK_PATH = ROOT_DIR / "backend" / "feedback.jsonl"
+USAGE_PATH = ROOT_DIR / "backend" / "usage.json"
+
+
+def load_usage() -> dict:
+    default_usage = {
+        "total_tokens": 0,
+        "prompt_tokens": 0,
+        "output_tokens": 0,
+        "requests": 0,
+        "by_model": {},
+    }
+    if USAGE_PATH.exists():
+        try:
+            with open(USAGE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {
+                    "total_tokens": int(data.get("total_tokens", 0)),
+                    "prompt_tokens": int(data.get("prompt_tokens", 0)),
+                    "output_tokens": int(data.get("output_tokens", 0)),
+                    "requests": int(data.get("requests", 0)),
+                    "by_model": data.get("by_model", {}) if isinstance(data.get("by_model"), dict) else {},
+                }
+        except Exception:
+            pass
+    return default_usage
+
+
+def save_usage():
+    try:
+        USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_file = USAGE_PATH.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(USAGE, f, ensure_ascii=False, indent=2)
+        temp_file.replace(USAGE_PATH)
+    except Exception as e:
+        print(f"[USAGE SAVE ERROR] {e}")
+
 
 MODELS = [
     {"id": "gemini-3.1-pro", "label": "Gemini 3.1 Pro", "desc": "최고 정확도 · 복잡한 의도 분석"},
@@ -54,11 +92,17 @@ MODELS = [
     {"id": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash-Lite", "desc": "초경량 · 최저 비용"},
 ]
 MODEL_IDS = {m["id"] for m in MODELS}
+MODEL_ALIASES = {
+    "gemini-3.1-pro": "gemini-3.1-pro-preview",
+    "gemini-3.8-flash-agentic": "gemini-3.8-flash",
+}
 
-# ----------------- 인메모리 상태 (단일 사용자 로컬 실행 기준) -----------------
+# ----------------- 상태 관리 (단일 사용자 로컬 실행 기준) -----------------
 STATE_LOCK = threading.Lock()
 VIDEOS: dict = {}  # id -> {id, name, source, local_path, gemini_name, status, error, selected, created_at}
-USAGE = {"total_tokens": 0, "prompt_tokens": 0, "output_tokens": 0, "requests": 0, "by_model": {}}
+USAGE = load_usage()
+if not USAGE_PATH.exists():
+    save_usage()
 
 _client = None
 
@@ -101,11 +145,12 @@ def poll_video_processing(client, file_name):
 
 
 def generate_with_retry(model, contents, config=None, max_retries=3):
-    """503 에러 발생 시 3초 대기 후 재시도"""
+    """503 에러 발생 시 3초 대기 후 재시도 (실제 API 모델명으로 매핑)"""
     client = get_client()
+    actual_model = MODEL_ALIASES.get(model, model)
     for attempt in range(max_retries):
         try:
-            response = client.models.generate_content(model=model, contents=contents, config=config or {})
+            response = client.models.generate_content(model=actual_model, contents=contents, config=config or {})
             record_usage(model, response)
             return response.text or ""
         except Exception as e:
@@ -129,6 +174,7 @@ def record_usage(model, response):
         bm = USAGE["by_model"].setdefault(model, {"tokens": 0, "requests": 0})
         bm["tokens"] += total
         bm["requests"] += 1
+        save_usage()
 
 
 def cleanup_video(vid):
@@ -279,6 +325,18 @@ def get_usage():
     return USAGE
 
 
+@app.post("/api/usage/reset")
+def reset_usage():
+    with STATE_LOCK:
+        USAGE["total_tokens"] = 0
+        USAGE["prompt_tokens"] = 0
+        USAGE["output_tokens"] = 0
+        USAGE["requests"] = 0
+        USAGE["by_model"] = {}
+        save_usage()
+    return USAGE
+
+
 @app.get("/api/videos")
 def list_videos():
     return sorted([public_video(v) for v in VIDEOS.values()], key=lambda x: x["created_at"])
@@ -396,16 +454,23 @@ def save_feedback(req: FeedbackReq):
 
 # ----------------- 3단계 파이프라인: 질의 확장 → 컷 탐색 → 편집 추천 -----------------
 def expand_queries(intent, model, history):
+    is_agentic = (model == "gemini-3.8-flash-agentic")
     ctx = "\n".join(f"- {h.intent}" for h in history[-5:])
     ctx_block = f"[이전 대화 맥락]\n{ctx}\n" if ctx else ""
+    agentic_guide = "\n다각도 가설 기반으로 시각적 대비(풀샷/클로즈업/동적 모션)를 고려하여 정교하게 확장하라." if is_agentic else ""
     prompt = f"""너는 영상 편집 기획자야. 사용자의 제작 의도(Editing Brief)를 영상에서 실제로 찾을 수 있는
-구체적인 시각적/청각적 장면 묘사 3개로 확장해.
+구체적인 시각적/청각적 장면 묘사 3개로 확장해.{agentic_guide}
 {ctx_block}
 [제작 의도] {intent}
 
 반드시 아래 JSON 형식으로만 출력해.
 {{"expanded_queries": ["장면 묘사1", "장면 묘사2", "장면 묘사3"]}}"""
-    text = generate_with_retry(model, [prompt], {'temperature': 0.4})
+    
+    if is_agentic:
+        config = types.GenerateContentConfig(temperature=0.3, thinking_config=types.ThinkingConfig(thinking_budget=1024))
+    else:
+        config = {'temperature': 0.4}
+    text = generate_with_retry(model, [prompt], config)
     try:
         return parse_json(text).get("expanded_queries", [])[:5]
     except Exception:
@@ -421,6 +486,7 @@ def search(req: SearchReq):
         raise HTTPException(400, "검색 가능한(처리 완료된) 영상이 없습니다. 왼쪽 패널에서 영상을 추가하고 선택해주세요.")
 
     client = get_client()
+    is_agentic = (req.model == "gemini-3.8-flash-agentic")
 
     # 1단계: 질의 확장
     queries = [q for q in (req.queries or []) if q.strip()]
@@ -436,11 +502,18 @@ def search(req: SearchReq):
     video_list = "\n".join(f"- {v['name']}" for v in targets)
     ctx_block = f"[이전 대화 맥락 - 후속 질문이면 이를 반영해]\n{ctx}\n" if ctx else ""
 
+    agentic_block = """
+[에이전틱 자기 검증(Self-Reflection) 필수]
+- 1단계 가설 수립: 확장된 질의와 매칭되는 후보 구간들을 넉넉히 발굴한다.
+- 2단계 비판적 재검토: 각 후보 컷의 구도, 인물, 속도감이 [제작 의도]에 완벽히 부합하는지 자기 비판(Critique)한다.
+- 3단계 최종 엄선: 모호하거나 부합하지 않는 컷은 배제하고 최고 순위만 선별한다.
+""" if is_agentic else ""
+
     prompt = f"""너는 최고 수준의 영상 편집자이자 AI 분석가야.
 사용자의 [제작 의도: {req.intent}]를 바탕으로, 첨부된 영상들에서 가장 완벽하게 부합하는 클립을 추천해야 해.
 각 영상의 이름은 파일의 display_name 속성(메타데이터)으로 구분하며, 첨부 순서대로 다음과 같아:
 {video_list}
-{ctx_block}
+{ctx_block}{agentic_block}
 다음 순서대로 생각하고 분석해:
 {expansion_block}
 2. 컷 탐색: 확장된 장면들이 각 영상의 몇 분 몇 초(타임스탬프)에 등장하는지 면밀히 스캔해.
@@ -466,8 +539,16 @@ def search(req: SearchReq):
         contents.append(client.files.get(name=v["gemini_name"]))
     contents.append(prompt)
 
-    # 2~3단계: 컷 탐색 + 최종 추천
-    text = generate_with_retry(req.model, contents, {'temperature': 0.2})
+    # 2~3단계: 컷 탐색 + 최종 추천 (에이전틱 모델일 경우 Thinking Budget 활성화)
+    if is_agentic:
+        config = types.GenerateContentConfig(
+            temperature=0.2,
+            thinking_config=types.ThinkingConfig(thinking_budget=2048)
+        )
+    else:
+        config = {'temperature': 0.2}
+
+    text = generate_with_retry(req.model, contents, config)
     try:
         data = parse_json(text)
     except Exception:

@@ -79,6 +79,7 @@ export const api = {
   health: () => request<Health>("/api/health"),
   models: () => request<ModelInfo[]>("/api/models"),
   usage: () => request<Usage>("/api/usage"),
+  resetUsage: () => request<Usage>("/api/usage/reset", { method: "POST" }),
   videos: () => request<Video[]>("/api/videos"),
   upload: (files: File[]) => {
     const fd = new FormData();
