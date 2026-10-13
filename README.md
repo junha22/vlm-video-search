@@ -33,7 +33,7 @@ python -m venv venv
 # (Mac/Linux의 경우: source venv/bin/activate)
 
 # 필수 패키지 설치
-pip install fastapi uvicorn yt-dlp google-genai python-dotenv pydantic
+pip install fastapi uvicorn "yt-dlp[default,deno]" google-genai python-dotenv pydantic
 # 또는 기존 방식대로 pip install -r requirements.txt (fastapi, uvicorn 등 백엔드 패키지 추가 필요)
 ```
 
@@ -78,6 +78,9 @@ npm run dev
 
 ### 3. 접속 및 사용
 브라우저에서 `http://localhost:3000`에 접속하여 서비스를 이용합니다.
+
+## ☁️ 무료 배포 (Azure for Students)
+VM 한 대에 프론트엔드와 백엔드를 함께 올리는 방법은 [deploy/AZURE.md](deploy/AZURE.md)를 참고하세요.
 
 ## 📝 사용 방법 요약
 1. **영상 소스 선택**: 왼쪽 패널에서 유튜브 링크를 추가하고 검색 대상 체크박스를 활성화합니다.

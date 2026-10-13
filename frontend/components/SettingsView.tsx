@@ -126,7 +126,7 @@ export default function SettingsView({
           <IconCheck size={16} />
           <div>
             <h2>시스템 상태</h2>
-            <p>백엔드: <span className="mono">{API_BASE}</span></p>
+            <p>백엔드: <span className="mono">{API_BASE || "같은 주소 (단일 서버 배포)"}</span></p>
           </div>
         </div>
         <div className="health">

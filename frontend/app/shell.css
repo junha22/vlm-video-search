@@ -480,6 +480,12 @@
 .src-form .btn {
   width: 100%;
 }
+.src-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
 
 .dropzone {
   display: flex;
@@ -1151,6 +1157,19 @@
   width: 100%;
   aspect-ratio: 16 / 9;
   background: #000;
+}
+.yt-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+}
+.yt-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
 .timeline {
   position: relative;

@@ -10,6 +10,9 @@ export interface Video {
   error: string | null;
   selected: boolean;
   created_at: number;
+  youtube_id: string | null;
+  /** false 면 서버에 영상 파일이 없음 (유튜브 링크 모드) → 미리보기는 유튜브 플레이어, 클립 다운로드 불가 */
+  has_file: boolean;
 }
 
 export interface ModelInfo {
@@ -49,6 +52,8 @@ export interface Health {
   ok: boolean;
   api_key: boolean;
   ffmpeg: boolean;
+  youtube_mode?: "download" | "url";
+  max_upload_mb?: number;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -111,6 +116,9 @@ export const api = {
   clipUrl: (id: string, start: number, end: number) =>
     `${API_BASE}/api/videos/${id}/clip?start=${start.toFixed(2)}&end=${end.toFixed(2)}`,
 };
+
+export const youtubeWatchUrl = (id: string, start = 0) =>
+  `https://www.youtube.com/watch?v=${id}${start > 0 ? `&t=${Math.floor(start)}s` : ""}`;
 
 export function formatTime(sec: number): string {
   if (!isFinite(sec) || sec < 0) sec = 0;

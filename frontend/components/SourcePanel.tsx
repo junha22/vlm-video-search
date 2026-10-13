@@ -20,6 +20,8 @@ export default function SourcePanel({
   onToggle,
   onToggleAll,
   onDelete,
+  youtubeMode,
+  maxUploadMb,
 }: {
   videos: Video[];
   onAddYoutube: (url: string) => Promise<void>;
@@ -27,6 +29,8 @@ export default function SourcePanel({
   onToggle: (id: string, selected: boolean) => void;
   onToggleAll: (selected: boolean) => void;
   onDelete: (id: string) => void;
+  youtubeMode?: "download" | "url";
+  maxUploadMb?: number;
 }) {
   const [tab, setTab] = useState<"youtube" | "upload">("youtube");
   const [url, setUrl] = useState("");
@@ -104,6 +108,11 @@ export default function SourcePanel({
                 {busy ? <span className="spinner" /> : null}
                 영상 추가
               </button>
+              {youtubeMode === "url" && (
+                <p className="src-hint">
+                  공개 영상만 분석할 수 있습니다. 미리보기는 유튜브 플레이어로 재생되고, MP4 클립 다운로드는 직접 업로드한 파일만 가능합니다.
+                </p>
+              )}
             </div>
           ) : (
             <div className="src-form fade-up" key="up">
@@ -124,7 +133,9 @@ export default function SourcePanel({
               >
                 <span className="dz-icon">{busy ? <span className="spinner" /> : <IconUpload size={20} />}</span>
                 <span className="dz-title">{busy ? "업로드 중..." : "클릭하거나 파일을 끌어다 놓으세요"}</span>
-                <span className="dz-sub">MP4 · MOV · AVI · 여러 개 선택 가능</span>
+                <span className="dz-sub">
+                  MP4 · MOV · AVI · 여러 개 선택 가능{maxUploadMb ? ` · 최대 ${maxUploadMb}MB` : ""}
+                </span>
               </button>
               <input
                 ref={fileRef}

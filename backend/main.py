@@ -8,10 +8,20 @@
   4. 최신 google-genai SDK 사용
 
 실행:  uvicorn backend.main:app --reload --port 8000   (프로젝트 루트에서)
+
+배포용 환경 변수 (모두 선택 · 기본값은 로컬 실행 기준):
+  YOUTUBE_MODE      download(기본) | url  - url 이면 영상을 내려받지 않고 유튜브 링크를 Gemini 에 바로 전달
+  MAX_UPLOAD_MB     업로드 1회 최대 용량(MB), 0 이면 제한 없음
+  MAX_CLIP_SECONDS  클립 다운로드 최대 길이(초), 0 이면 제한 없음
+  FFMPEG_THREADS    클립 인코딩 스레드 수 (저사양 서버는 1 권장), 비우면 ffmpeg 기본값
+  DATA_DIR          usage.json / feedback.jsonl 저장 위치 (기본: backend/)
+  STATIC_DIR        정적 빌드한 프론트엔드 폴더 (기본: frontend/out, 있으면 같은 주소에서 UI 도 제공)
 """
 
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -21,12 +31,16 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import urlopen
 
 import yt_dlp
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
@@ -35,6 +49,20 @@ from pydantic import BaseModel
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+YOUTUBE_MODE = "url" if os.environ.get("YOUTUBE_MODE", "").strip().lower() == "url" else "download"
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB") or 0)
+MAX_CLIP_SECONDS = float(os.environ.get("MAX_CLIP_SECONDS") or 0)
+FFMPEG_THREADS = (os.environ.get("FFMPEG_THREADS") or "").strip()
+if not FFMPEG_THREADS.isdigit():
+    FFMPEG_THREADS = ""
+DATA_DIR = Path(os.environ.get("DATA_DIR") or ROOT_DIR / "backend")
+STATIC_DIR = Path(os.environ.get("STATIC_DIR") or ROOT_DIR / "frontend" / "out")
+
+ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v"}
+MAX_VIDEOS_PER_SEARCH = 10      # Gemini 가 한 요청에서 받는 유튜브 링크 최대 개수
+GEMINI_FILE_TTL = 47 * 3600     # Gemini Files API 는 업로드 48시간 뒤 파일을 자동 삭제
+CLIP_LOCK = threading.Semaphore(1)  # 저사양 서버에서 ffmpeg 동시 실행으로 메모리가 터지지 않도록
 
 # 프로젝트 루트의 ffmpeg.exe 를 우선 사용, 없으면 PATH 에서 탐색
 if (ROOT_DIR / "ffmpeg.exe").exists():
@@ -46,8 +74,9 @@ else:
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "intent_clip"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
-FEEDBACK_PATH = ROOT_DIR / "backend" / "feedback.jsonl"
-USAGE_PATH = ROOT_DIR / "backend" / "usage.json"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+FEEDBACK_PATH = DATA_DIR / "feedback.jsonl"
+USAGE_PATH = DATA_DIR / "usage.json"
 
 
 def load_usage() -> dict:
@@ -86,20 +115,22 @@ def save_usage():
 
 
 MODELS = [
-    {"id": "gemini-3.1-pro", "label": "Gemini 3.1 Pro", "desc": "최고 정확도 · 복잡한 의도 분석"},
+    {"id": "gemini-3.1-pro", "label": "Gemini 3.1 Pro", "desc": "최고 정확도 · 복잡한 의도 분석 · 유료 키 전용"},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash", "desc": "빠른 속도 · 균형 잡힌 성능"},
     {"id": "gemini-3.8-flash-agentic", "label": "Gemini 3.8 Flash (에이전틱)", "desc": "다단계 추론 · 에이전트형 탐색"},
-    {"id": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash-Lite", "desc": "초경량 · 최저 비용"},
+    {"id": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash-Lite", "desc": "초경량 · 최저 비용 · 무료 키 기본값"},
 ]
 MODEL_IDS = {m["id"] for m in MODELS}
 MODEL_ALIASES = {
     "gemini-3.1-pro": "gemini-3.1-pro-preview",
     "gemini-3.8-flash-agentic": "gemini-3.8-flash",
 }
+# gemini-3.1-pro-preview 는 무료 등급이 없어 무료 키로는 모든 요청이 429(limit: 0)로 실패
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 # ----------------- 상태 관리 (단일 사용자 로컬 실행 기준) -----------------
 STATE_LOCK = threading.Lock()
-VIDEOS: dict = {}  # id -> {id, name, source, local_path, gemini_name, status, error, selected, created_at}
+VIDEOS: dict = {}  # id -> {id, name, source, local_path, youtube_id, gemini_name, uploaded_at, status, error, selected, created_at}
 USAGE = load_usage()
 if not USAGE_PATH.exists():
     save_usage()
@@ -116,15 +147,56 @@ def get_client():
     return _client
 
 
+# ----------------- 유튜브 링크 처리 -----------------
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"}
+YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def parse_youtube_id(url):
+    """유튜브 주소에서 11자리 영상 ID 만 추출 (다른 사이트·내부망 주소는 거부)"""
+    text = url.strip()
+    if "://" not in text:
+        text = "https://" + text
+    try:
+        u = urlparse(text)
+        host = (u.hostname or "").lower()
+    except ValueError:
+        return None
+    if u.scheme not in ("http", "https"):
+        return None
+    vid = ""
+    if host == "youtu.be":
+        vid = u.path.strip("/").split("/")[0]
+    elif host in YOUTUBE_HOSTS:
+        parts = u.path.strip("/").split("/")
+        if parts[0] == "watch":
+            vid = parse_qs(u.query).get("v", [""])[0]
+        elif len(parts) >= 2 and parts[0] in ("shorts", "embed", "live", "v"):
+            vid = parts[1]
+    return vid if YOUTUBE_ID_RE.match(vid) else None
+
+
+def youtube_watch_url(video_id):
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
+def fetch_youtube_title(video_id):
+    """oEmbed 로 제목 조회 (API 키 불필요). 비공개·삭제된 영상이면 HTTPError 발생"""
+    query = urlencode({"url": youtube_watch_url(video_id), "format": "json"})
+    with urlopen(f"https://www.youtube.com/oembed?{query}", timeout=8) as res:
+        return json.load(res).get("title")
+
+
 # ----------------- 기존 핵심 로직 (유지) -----------------
 def download_youtube_video(url, output_path):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best',
+        # H.264(avc1) 우선: AV1 은 클립 재인코딩이 무겁고 일부 브라우저에서 재생되지 않음
+        'format': 'bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best',
         'outtmpl': output_path,
         'quiet': True,
         'no_warnings': True,
+        'noplaylist': True,
         'merge_output_format': 'mp4',
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
     }
     if FFMPEG_DIR:
         ydl_opts['ffmpeg_location'] = FFMPEG_DIR
@@ -144,8 +216,20 @@ def poll_video_processing(client, file_name):
         time.sleep(3)
 
 
+def gemini_error(err):
+    """Gemini 오류를 (상태 코드, 사용자용 메시지)로 변환 - 원본 쿼터 JSON 이 화면에 그대로 뜨지 않도록"""
+    msg = str(err)
+    if "limit: 0" in msg:
+        return 429, "선택한 모델은 무료 API 키로 사용할 수 없습니다. 상단에서 Flash-Lite 등 다른 모델을 선택해주세요."
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return 429, "Gemini API 사용 한도를 초과했습니다. 잠시 후 다시 시도하거나 다른 모델을 선택해주세요."
+    if "API_KEY_INVALID" in msg or "API key not valid" in msg:
+        return 500, "서버의 Gemini API Key가 올바르지 않습니다."
+    return 502, f"AI 분석 중 오류 발생: {msg[:300]}"
+
+
 def generate_with_retry(model, contents, config=None, max_retries=3):
-    """503 에러 발생 시 3초 대기 후 재시도 (실제 API 모델명으로 매핑)"""
+    """503 은 3초 뒤, 분당 한도 초과(429)는 안내된 대기 시간(30초 이하) 뒤 재시도 (실제 API 모델명으로 매핑)"""
     client = get_client()
     actual_model = MODEL_ALIASES.get(model, model)
     for attempt in range(max_retries):
@@ -154,10 +238,17 @@ def generate_with_retry(model, contents, config=None, max_retries=3):
             record_usage(model, response)
             return response.text or ""
         except Exception as e:
-            if "503" in str(e) and attempt < max_retries - 1:
-                time.sleep(3)
-                continue
-            raise HTTPException(status_code=502, detail=f"AI 분석 중 오류 발생: {e}")
+            msg = str(e)
+            if attempt < max_retries - 1:
+                if "503" in msg:
+                    time.sleep(3)
+                    continue
+                delay = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+)", msg)
+                if "429" in msg and "PerMinute" in msg and "limit: 0" not in msg and delay and int(delay.group(1)) <= 30:
+                    time.sleep(int(delay.group(1)) + 1)
+                    continue
+            status, detail = gemini_error(e)
+            raise HTTPException(status_code=status, detail=detail)
     return ""
 
 
@@ -192,6 +283,20 @@ def cleanup_video(vid):
             pass
 
 
+def expire_stale_videos():
+    """Gemini 가 48시간 뒤 지우는 업로드 파일을 미리 만료 처리 (오래 켜둔 서버에서 검색이 실패하지 않도록)"""
+    now = time.time()
+    expired = []
+    with STATE_LOCK:
+        for v in VIDEOS.values():
+            if v["gemini_name"] and v["uploaded_at"] and now - v["uploaded_at"] > GEMINI_FILE_TTL:
+                expired.append(dict(v))
+                v.update(gemini_name=None, local_path=None, status="error", selected=False,
+                         error="업로드 후 48시간이 지나 Gemini 파일이 만료되었습니다. 삭제 후 다시 추가해주세요.")
+    for v in expired:
+        cleanup_video(v)
+
+
 def parse_json(text):
     cleaned = text.replace("```json", "").replace("```", "").strip()
     start, end = cleaned.find("{"), cleaned.rfind("}")
@@ -201,7 +306,9 @@ def parse_json(text):
 
 
 def public_video(v):
-    return {k: v[k] for k in ("id", "name", "source", "status", "error", "selected", "created_at")}
+    data = {k: v[k] for k in ("id", "name", "source", "status", "error", "selected", "created_at", "youtube_id")}
+    data["has_file"] = bool(v["local_path"])  # False 면 미리보기는 유튜브 플레이어, 클립 다운로드 불가
+    return data
 
 
 # ----------------- 백그라운드 작업 -----------------
@@ -213,7 +320,7 @@ def process_upload(vid_id):
         client = get_client()
         _set(vid_id, status="uploading")
         gemini_file = client.files.upload(file=vid["local_path"], config={'display_name': vid["name"]})
-        _set(vid_id, gemini_name=gemini_file.name, status="processing")
+        _set(vid_id, gemini_name=gemini_file.name, uploaded_at=time.time(), status="processing")
         poll_video_processing(client, gemini_file.name)
         _set(vid_id, status="ready")
     except Exception as e:
@@ -225,10 +332,29 @@ def process_youtube(vid_id, url):
         _set(vid_id, status="downloading")
         title = download_youtube_video(url, VIDEOS[vid_id]["local_path"])
         if title:
-            _set(vid_id, name=f"{title[:60]}")
+            _set(vid_id, name=_unique_name(title[:60], exclude=vid_id))
         process_upload(vid_id)
     except Exception as e:
         _set(vid_id, status="error", error=str(e))
+
+
+def process_youtube_url(vid_id, video_id):
+    """URL 모드: 내려받지 않고 제목만 확인한 뒤 바로 분석 가능 상태로 전환 (Gemini 가 유튜브에서 직접 읽음)"""
+    try:
+        _set(vid_id, status="processing")
+        title = fetch_youtube_title(video_id)
+        if title:
+            _set(vid_id, name=_unique_name(title[:60], exclude=vid_id))
+        _set(vid_id, status="ready")
+    except HTTPError as e:
+        if e.code in (401, 403):
+            _set(vid_id, status="error", error="비공개이거나 외부 재생이 막힌 영상입니다. 공개 영상만 분석할 수 있습니다.")
+        elif e.code in (400, 404):  # 없는 영상 ID 는 400, 삭제된 영상은 404
+            _set(vid_id, status="error", error="영상을 찾을 수 없습니다. 주소를 확인해주세요.")
+        else:
+            _set(vid_id, status="ready")  # 제목 조회만 실패 (일시적 오류) → 기본 이름으로 진행
+    except Exception:
+        _set(vid_id, status="ready")
 
 
 def _set(vid_id, **kwargs):
@@ -237,18 +363,24 @@ def _set(vid_id, **kwargs):
             VIDEOS[vid_id].update(kwargs)
 
 
-def _new_video(name, source, local_path):
-    vid_id = uuid.uuid4().hex[:10]
-    # 동일한 display_name 충돌 방지
-    existing = {v["name"] for v in VIDEOS.values()}
+def _unique_name(name, exclude=None):
+    """동일한 이름 충돌 방지 (AI 응답의 영상 이름으로 원본을 찾기 때문)"""
+    existing = {v["name"] for v in VIDEOS.values() if v["id"] != exclude}
     base, n = name, 2
     while name in existing:
         name = f"{base} ({n})"
         n += 1
+    return name
+
+
+def _new_video(name, source, local_path=None, youtube_id=None, with_file=True):
+    vid_id = uuid.uuid4().hex[:10]
+    if with_file and not local_path:
+        local_path = str(TEMP_DIR / f"{source}_{vid_id}.mp4")
     vid = {
-        "id": vid_id, "name": name, "source": source,
-        "local_path": local_path or str(TEMP_DIR / f"{source}_{vid_id}.mp4"),
-        "gemini_name": None, "status": "queued", "error": None,
+        "id": vid_id, "name": _unique_name(name), "source": source,
+        "local_path": local_path, "youtube_id": youtube_id,
+        "gemini_name": None, "uploaded_at": None, "status": "queued", "error": None,
         "selected": True, "created_at": time.time(),
     }
     with STATE_LOCK:
@@ -268,6 +400,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Intent-based Clip Recommendation API", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    """업로드 용량 제한: 본문을 디스크에 받기 전에 Content-Length 로 먼저 거절"""
+    if MAX_UPLOAD_MB and request.url.path == "/api/videos/upload":
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_UPLOAD_MB * 1024 * 1024:
+            return JSONResponse(status_code=413, content={"detail": f"업로드 용량 제한({MAX_UPLOAD_MB}MB)을 초과했습니다."})
+    return await call_next(request)
+
+
+# CORS 는 위 미들웨어보다 나중에 추가해야 바깥에서 감싸서 413 응답에도 CORS 헤더가 붙음
 allowed = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -293,7 +437,7 @@ class HistoryItem(BaseModel):
 
 class SearchReq(BaseModel):
     intent: str
-    model: str = "gemini-3.1-pro"
+    model: str = DEFAULT_MODEL
     use_expansion: bool = True
     video_ids: List[str]
     queries: Optional[List[str]] = None  # 사용자가 수정한 확장 질의 (있으면 그대로 사용)
@@ -312,7 +456,13 @@ class FeedbackReq(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "api_key": bool(API_KEY), "ffmpeg": bool(shutil.which(FFMPEG_BIN) or os.path.exists(FFMPEG_BIN))}
+    return {
+        "ok": True,
+        "api_key": bool(API_KEY),
+        "ffmpeg": bool(shutil.which(FFMPEG_BIN) or os.path.exists(FFMPEG_BIN)),
+        "youtube_mode": YOUTUBE_MODE,
+        "max_upload_mb": MAX_UPLOAD_MB,
+    }
 
 
 @app.get("/api/models")
@@ -339,14 +489,23 @@ def reset_usage():
 
 @app.get("/api/videos")
 def list_videos():
+    expire_stale_videos()
     return sorted([public_video(v) for v in VIDEOS.values()], key=lambda x: x["created_at"])
 
 
 @app.post("/api/videos/upload")
 async def upload_videos(background: BackgroundTasks, files: List[UploadFile] = File(...)):
+    # 형식·용량을 먼저 모두 검사 (일부만 등록된 채로 실패하지 않도록)
+    for uf in files:
+        ext = Path(uf.filename or "video.mp4").suffix.lower() or ".mp4"
+        if ext not in ALLOWED_VIDEO_EXTS:
+            raise HTTPException(400, f"지원하지 않는 파일 형식입니다: {ext} (MP4 · MOV · AVI 등 영상 파일만 가능)")
+    if MAX_UPLOAD_MB and sum(uf.size or 0 for uf in files) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"업로드 용량 제한({MAX_UPLOAD_MB}MB)을 초과했습니다.")
+
     created = []
     for uf in files:
-        ext = Path(uf.filename or "video.mp4").suffix or ".mp4"
+        ext = Path(uf.filename or "video.mp4").suffix.lower() or ".mp4"
         local_path = str(TEMP_DIR / f"local_{uuid.uuid4().hex}{ext}")
         with open(local_path, "wb") as f:
             while chunk := await uf.read(1024 * 1024):
@@ -361,8 +520,15 @@ async def upload_videos(background: BackgroundTasks, files: List[UploadFile] = F
 def add_youtube(req: YoutubeReq, background: BackgroundTasks):
     if not req.url.strip():
         raise HTTPException(400, "유튜브 링크를 입력해주세요.")
-    vid = _new_video(f"Youtube_{uuid.uuid4().hex[:6]}", "youtube", None)
-    background.add_task(process_youtube, vid["id"], req.url.strip())
+    video_id = parse_youtube_id(req.url)
+    if not video_id:
+        raise HTTPException(400, "유튜브 영상 주소만 추가할 수 있습니다. (예: https://www.youtube.com/watch?v=...)")
+    if YOUTUBE_MODE == "url":
+        vid = _new_video(f"YouTube {video_id}", "youtube", youtube_id=video_id, with_file=False)
+        background.add_task(process_youtube_url, vid["id"], video_id)
+    else:
+        vid = _new_video(f"Youtube_{uuid.uuid4().hex[:6]}", "youtube", youtube_id=video_id)
+        background.add_task(process_youtube, vid["id"], youtube_watch_url(video_id))
     return public_video(vid)
 
 
@@ -385,60 +551,38 @@ def delete_video(vid_id: str):
 
 
 @app.get("/api/videos/{vid_id}/stream")
-def stream_video(vid_id: str, request: Request):
-    """HTTP Range 를 지원하는 비디오 스트리밍 (브라우저 탐색/구간 재생용)"""
+def stream_video(vid_id: str):
+    """브라우저 탐색/구간 재생용 스트리밍 (HTTP Range 요청은 FileResponse 가 처리)"""
     vid = VIDEOS.get(vid_id)
-    if not vid or not os.path.exists(vid["local_path"]):
+    if not vid or not vid["local_path"] or not os.path.exists(vid["local_path"]):
         raise HTTPException(404, "영상 파일이 없습니다.")
-    path = vid["local_path"]
-    size = os.path.getsize(path)
-    range_header = request.headers.get("range")
-    media_type = "video/mp4" if path.lower().endswith(".mp4") else "video/quicktime" if path.lower().endswith(".mov") else "video/x-msvideo"
-
-    if not range_header:
-        return FileResponse(path, media_type=media_type, headers={"Accept-Ranges": "bytes"})
-
-    units, _, rng = range_header.partition("=")
-    start_s, _, end_s = rng.partition("-")
-    start = int(start_s) if start_s else 0
-    end = int(end_s) if end_s else min(start + 2 * 1024 * 1024, size - 1)
-    end = min(end, size - 1)
-    length = end - start + 1
-
-    def iterator():
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = length
-            while remaining > 0:
-                data = f.read(min(256 * 1024, remaining))
-                if not data:
-                    break
-                remaining -= len(data)
-                yield data
-
-    headers = {
-        "Content-Range": f"bytes {start}-{end}/{size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(length),
-    }
-    return StreamingResponse(iterator(), status_code=206, media_type=media_type, headers=headers)
+    return FileResponse(vid["local_path"])
 
 
 @app.get("/api/videos/{vid_id}/clip")
 def download_clip(vid_id: str, start: float, end: float, background: BackgroundTasks):
     """ffmpeg 로 IN/OUT 구간을 잘라 다운로드"""
     vid = VIDEOS.get(vid_id)
-    if not vid or not os.path.exists(vid["local_path"]):
+    if not vid or not vid["local_path"] or not os.path.exists(vid["local_path"]):
         raise HTTPException(404, "영상 파일이 없습니다.")
-    if end <= start:
+    if not (math.isfinite(start) and math.isfinite(end)) or start < 0 or end <= start:
         raise HTTPException(400, "OUT 시점은 IN 시점보다 뒤여야 합니다.")
+    if MAX_CLIP_SECONDS and end - start > MAX_CLIP_SECONDS:
+        raise HTTPException(400, f"클립은 최대 {MAX_CLIP_SECONDS:g}초까지 다운로드할 수 있습니다.")
     out_path = str(TEMP_DIR / f"clip_{uuid.uuid4().hex}.mp4")
     cmd = [FFMPEG_BIN, "-y", "-ss", f"{start:.2f}", "-i", vid["local_path"], "-t", f"{end - start:.2f}",
-           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-movflags", "+faststart", out_path]
+           "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-movflags", "+faststart"]
+    if FFMPEG_THREADS:
+        cmd += ["-threads", FFMPEG_THREADS]
+    cmd.append(out_path)
     try:
-        subprocess.run(cmd, check=True, capture_output=True)
+        with CLIP_LOCK:
+            subprocess.run(cmd, check=True, capture_output=True, timeout=300)
     except Exception as e:
-        raise HTTPException(500, f"클립 생성 실패 (ffmpeg 확인 필요): {e}")
+        print(f"[CLIP ERROR] {e}")
+        if os.path.exists(out_path):
+            os.remove(out_path)
+        raise HTTPException(500, "클립 생성에 실패했습니다. (ffmpeg 설치 여부를 확인해주세요)")
     background.add_task(lambda p: os.path.exists(p) and os.remove(p), out_path)
     safe = "".join(c for c in Path(vid["name"]).stem if c.isalnum() or c in "-_")[:40] or "clip"
     filename = f"{safe}_{int(start)}-{int(end)}.mp4"
@@ -465,7 +609,7 @@ def expand_queries(intent, model, history):
 
 반드시 아래 JSON 형식으로만 출력해.
 {{"expanded_queries": ["장면 묘사1", "장면 묘사2", "장면 묘사3"]}}"""
-    
+
     if is_agentic:
         config = types.GenerateContentConfig(temperature=0.3, thinking_config=types.ThinkingConfig(thinking_budget=1024))
     else:
@@ -481,9 +625,12 @@ def expand_queries(intent, model, history):
 def search(req: SearchReq):
     if req.model not in MODEL_IDS:
         raise HTTPException(400, "지원하지 않는 모델입니다.")
+    expire_stale_videos()
     targets = [VIDEOS[i] for i in req.video_ids if i in VIDEOS and VIDEOS[i]["status"] == "ready"]
     if not targets:
         raise HTTPException(400, "검색 가능한(처리 완료된) 영상이 없습니다. 왼쪽 패널에서 영상을 추가하고 선택해주세요.")
+    if len(targets) > MAX_VIDEOS_PER_SEARCH:
+        raise HTTPException(400, f"한 번에 최대 {MAX_VIDEOS_PER_SEARCH}개 영상까지 검색할 수 있습니다. 왼쪽 패널에서 선택을 줄여주세요.")
 
     client = get_client()
     is_agentic = (req.model == "gemini-3.8-flash-agentic")
@@ -491,7 +638,12 @@ def search(req: SearchReq):
     # 1단계: 질의 확장
     queries = [q for q in (req.queries or []) if q.strip()]
     if req.use_expansion and not queries:
-        queries = expand_queries(req.intent, req.model, req.history)
+        try:
+            queries = expand_queries(req.intent, req.model, req.history)
+        except HTTPException as e:
+            if e.status_code == 429:
+                raise
+            queries = []  # 질의 확장만 실패하면 의도 그대로 검색 진행
 
     if queries:
         expansion_block = "1. 질의 확장 결과(아래 장면들을 우선 탐색):\n" + "\n".join(f"   - {q}" for q in queries)
@@ -499,7 +651,7 @@ def search(req: SearchReq):
         expansion_block = "1. 질의 확장: 사용 안함. 입력된 의도 그대로만 탐색하라."
 
     ctx = "\n".join(f"- 의도: {h.intent}" + (f" / 결과: {h.summary}" if h.summary else "") for h in req.history[-5:])
-    video_list = "\n".join(f"- {v['name']}" for v in targets)
+    video_list = "\n".join(f"- [영상 {i}] {v['name']}" for i, v in enumerate(targets, 1))
     ctx_block = f"[이전 대화 맥락 - 후속 질문이면 이를 반영해]\n{ctx}\n" if ctx else ""
 
     agentic_block = """
@@ -511,7 +663,7 @@ def search(req: SearchReq):
 
     prompt = f"""너는 최고 수준의 영상 편집자이자 AI 분석가야.
 사용자의 [제작 의도: {req.intent}]를 바탕으로, 첨부된 영상들에서 가장 완벽하게 부합하는 클립을 추천해야 해.
-각 영상의 이름은 파일의 display_name 속성(메타데이터)으로 구분하며, 첨부 순서대로 다음과 같아:
+각 영상 바로 앞에 '[영상 번호] 이름' 라벨을 붙여 첨부했고, 순서대로 다음과 같아:
 {video_list}
 {ctx_block}{agentic_block}
 다음 순서대로 생각하고 분석해:
@@ -524,7 +676,7 @@ def search(req: SearchReq):
 {{
   "clips": [
     {{
-      "video_name": "영상의 display_name (위 목록 중 하나와 정확히 일치)",
+      "video_name": "영상 이름 ([영상 번호] 라벨 뒤의 이름, 위 목록 중 하나와 정확히 일치)",
       "start_time": 시작초(정수),
       "end_time": 종료초(정수),
       "reason": "추천 이유",
@@ -534,9 +686,18 @@ def search(req: SearchReq):
   ]
 }}"""
 
+    # SDK 가 파일의 display_name 을 모델에 전달하지 않으므로 영상마다 이름 라벨을 직접 붙임
     contents = []
-    for v in targets:
-        contents.append(client.files.get(name=v["gemini_name"]))
+    for i, v in enumerate(targets, 1):
+        contents.append(f"[영상 {i}] {v['name']}")
+        if v["gemini_name"]:
+            try:
+                contents.append(client.files.get(name=v["gemini_name"]))
+            except Exception:
+                raise HTTPException(400, f"'{v['name']}' 영상의 Gemini 파일을 찾을 수 없습니다. 삭제 후 다시 추가해주세요.")
+        else:
+            # URL 모드: Gemini 가 유튜브에서 직접 영상을 읽음 (공개 영상만 가능)
+            contents.append(types.Part(file_data=types.FileData(file_uri=youtube_watch_url(v["youtube_id"]))))
     contents.append(prompt)
 
     # 2~3단계: 컷 탐색 + 최종 추천 (에이전틱 모델일 경우 Thinking Budget 활성화)
@@ -557,8 +718,8 @@ def search(req: SearchReq):
     name_map = {v["name"]: v["id"] for v in targets}
     clips = []
     for i, c in enumerate(data.get("clips", [])):
-        vname = c.get("video_name", "")
-        vid_id = name_map.get(vname) or next((vid for n, vid in name_map.items() if vname in n or n in vname), None)
+        vname = re.sub(r"^\[영상 \d+\]\s*", "", c.get("video_name", "") or "")
+        vid_id = name_map.get(vname) or next((vid for n, vid in name_map.items() if vname and (vname in n or n in vname)), None)
         if not vid_id and len(targets) == 1:
             vid_id = targets[0]["id"]
         clips.append({
@@ -574,3 +735,9 @@ def search(req: SearchReq):
         })
 
     return {"expanded_queries": queries, "clips": clips, "usage": USAGE}
+
+
+# ----------------- 정적 프론트엔드 (단일 서버 배포) -----------------
+# npm run build:static 결과물(frontend/out)이 있으면 같은 주소에서 UI 도 함께 제공 (위의 /api 라우트가 우선)
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="web")

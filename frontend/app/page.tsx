@@ -10,11 +10,13 @@ import ClipPanel from "@/components/ClipPanel";
 import SettingsView from "@/components/SettingsView";
 
 const FALLBACK_MODELS: ModelInfo[] = [
-  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", desc: "최고 정확도 · 복잡한 의도 분석" },
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", desc: "최고 정확도 · 복잡한 의도 분석 · 유료 키 전용" },
   { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", desc: "빠른 속도 · 균형 잡힌 성능" },
   { id: "gemini-3.8-flash-agentic", label: "Gemini 3.8 Flash (에이전틱)", desc: "다단계 추론 · 에이전트형 탐색" },
-  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", desc: "초경량 · 최저 비용" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", desc: "초경량 · 최저 비용 · 무료 키 기본값" },
 ];
+// 3.1 Pro 는 무료 등급이 없어 무료 키로는 모든 검색이 실패하므로 Flash-Lite 를 기본값으로
+const DEFAULT_MODEL = "gemini-3.1-flash-lite";
 
 const BUSY = new Set(["queued", "downloading", "uploading", "processing"]);
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -28,7 +30,7 @@ interface Toast {
 export default function Home() {
   const [view, setView] = useState<View>("dashboard");
   const [models, setModels] = useState<ModelInfo[]>(FALLBACK_MODELS);
-  const [model, setModel] = useState(FALLBACK_MODELS[0].id);
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [expansion, setExpansion] = useState(true);
   const [numClips, setNumClips] = useState(3);
   const [usage, setUsage] = useState<Usage | null>(null);
@@ -102,6 +104,11 @@ export default function Home() {
     }
   };
   const upload = async (files: File[]) => {
+    const limitMb = health?.max_upload_mb;
+    if (limitMb && files.reduce((sum, f) => sum + f.size, 0) > limitMb * 1024 * 1024) {
+      toast(`업로드 용량 제한(${limitMb}MB)을 초과했습니다. 파일을 나누거나 줄여서 올려주세요.`);
+      return;
+    }
     try {
       const list = await api.upload(files);
       setVideos((p) => [...p, ...list]);
@@ -247,6 +254,8 @@ export default function Home() {
               onToggle={toggleVideo}
               onToggleAll={toggleAll}
               onDelete={deleteVideo}
+              youtubeMode={health?.youtube_mode}
+              maxUploadMb={health?.max_upload_mb}
             />
             <ChatPanel
               messages={messages}
@@ -263,6 +272,7 @@ export default function Home() {
             />
             <ClipPanel
               clips={activeClips}
+              videos={videos}
               activeId={activeClipId}
               playNonce={playNonce}
               onSelect={selectClip}

@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, formatTime, type Clip } from "@/lib/api";
-import { IconDownload, IconMinus, IconPlay, IconPlus, IconScissors, IconThumbDown, IconThumbUp } from "./Icons";
+import { api, formatTime, youtubeWatchUrl, type Clip, type Video } from "@/lib/api";
+import { IconDownload, IconMinus, IconPlay, IconPlus, IconScissors, IconThumbDown, IconThumbUp, IconYoutube } from "./Icons";
+import YouTubePlayer from "./YouTubePlayer";
 
 const STEP = 0.5;
 
@@ -44,6 +45,7 @@ function TimeAdjust({
 
 export default function ClipPanel({
   clips,
+  videos,
   activeId,
   playNonce,
   onSelect,
@@ -52,6 +54,7 @@ export default function ClipPanel({
   locked = false,
 }: {
   clips: Clip[];
+  videos: Video[];
   activeId: string | null;
   playNonce: number;
   onSelect: (id: string) => void;
@@ -63,11 +66,21 @@ export default function ClipPanel({
   const stopAtOut = useRef(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
+  const [ytKey, setYtKey] = useState(0);
 
+  const videoOf = (c: Clip | null) => (c?.video_id ? videos.find((v) => v.id === c.video_id) : undefined);
   const active = clips.find((c) => c.id === activeId) ?? null;
-  const src = active?.video_id ? api.streamUrl(active.video_id) : null;
+  const activeVideo = videoOf(active);
+  // 서버에 파일이 있으면 직접 스트리밍, 유튜브 링크 모드면 유튜브 플레이어로 미리보기
+  const src = activeVideo?.has_file ? api.streamUrl(activeVideo.id) : null;
+  const ytId = !src && activeVideo?.youtube_id ? activeVideo.youtube_id : null;
+  const currentTime = () => (ytId ? cur : videoRef.current?.currentTime);
 
   const playRange = useCallback(() => {
+    if (ytId) {
+      setYtKey((k) => k + 1);
+      return;
+    }
     const v = videoRef.current;
     if (!v || !active) return;
     const go = () => {
@@ -77,7 +90,7 @@ export default function ClipPanel({
     };
     if (v.readyState >= 1 && v.currentSrc === src) go();
     else v.addEventListener("loadedmetadata", go, { once: true });
-  }, [active, src]);
+  }, [active, src, ytId]);
 
   // 클립 선택 / 구간 재생 요청 시 해당 IN 지점부터 재생
   useEffect(() => {
@@ -145,6 +158,23 @@ export default function ClipPanel({
                 </div>
               )}
             </>
+          ) : ytId && active ? (
+            <>
+              <YouTubePlayer
+                videoId={ytId}
+                start={active.start_time}
+                end={active.end_time}
+                playKey={ytKey}
+                onTime={setCur}
+                onDuration={setDur}
+              />
+              {dur > 0 && (
+                <div className="timeline" title="전체 영상 중 추천 구간">
+                  <span className="tl-range" style={{ left: pct(active.start_time), width: pct(active.end_time - active.start_time) }} />
+                  <span className="tl-head" style={{ left: pct(cur) }} />
+                </div>
+              )}
+            </>
           ) : (
             <div className="player-empty">
               <div className="pe-icon">
@@ -172,6 +202,7 @@ export default function ClipPanel({
           <ol className="clip-list">
             {clips.map((c) => {
               const isActive = c.id === activeId;
+              const cv = videoOf(c);
               return (
                 <li
                   key={c.id}
@@ -204,13 +235,13 @@ export default function ClipPanel({
                         label="IN"
                         value={c.start_time}
                         onChange={(v) => clamp(c, { start_time: v })}
-                        onSetCurrent={() => clamp(c, { start_time: videoRef.current?.currentTime ?? c.start_time })}
+                        onSetCurrent={() => clamp(c, { start_time: currentTime() ?? c.start_time })}
                       />
                       <TimeAdjust
                         label="OUT"
                         value={c.end_time}
                         onChange={(v) => clamp(c, { end_time: v })}
-                        onSetCurrent={() => clamp(c, { end_time: videoRef.current?.currentTime ?? c.end_time })}
+                        onSetCurrent={() => clamp(c, { end_time: currentTime() ?? c.end_time })}
                       />
                     </div>
                   )}
@@ -219,17 +250,29 @@ export default function ClipPanel({
                     <button
                       className="btn btn-ghost btn-sm"
                       onClick={() => (isActive ? playRange() : onSelect(c.id))}
-                      disabled={!c.video_id}
+                      disabled={!cv}
                     >
                       <IconPlay size={11} /> 구간 재생
                     </button>
-                    <a
-                      className={`btn btn-ghost btn-sm ${!c.video_id ? "disabled" : ""}`}
-                      href={c.video_id ? api.clipUrl(c.video_id, c.start_time, c.end_time) : undefined}
-                      download
-                    >
-                      <IconDownload size={13} /> 다운로드
-                    </a>
+                    {cv && !cv.has_file && cv.youtube_id ? (
+                      // 유튜브 링크 모드: 서버에 원본이 없어 MP4 클립 대신 해당 시점의 유튜브 링크 제공
+                      <a
+                        className="btn btn-ghost btn-sm"
+                        href={youtubeWatchUrl(cv.youtube_id, c.start_time)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <IconYoutube size={13} /> YouTube
+                      </a>
+                    ) : (
+                      <a
+                        className={`btn btn-ghost btn-sm ${!cv ? "disabled" : ""}`}
+                        href={cv ? api.clipUrl(cv.id, c.start_time, c.end_time) : undefined}
+                        download
+                      >
+                        <IconDownload size={13} /> 다운로드
+                      </a>
+                    )}
                     <div className="fb">
                       <button
                         className={`fb-btn good ${c.feedback === "good" ? "on" : ""}`}
