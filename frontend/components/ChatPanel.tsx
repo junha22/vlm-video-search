@@ -178,6 +178,7 @@ export default function ChatPanel({
   locked?: boolean;
 }) {
   const [text, setText] = useState("");
+  const [confirmNew, setConfirmNew] = useState(false); // "새 대화" 누르면 바로 지우지 않고 한 번 더 확인
   const bodyRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -345,10 +346,31 @@ export default function ChatPanel({
           </span>
           {done.length > 0 && (
             <span className="ctx-chip">
-              이전 대화 {done.length}개를 이어서 검색합니다
-              <button className="link-btn" onClick={onNewChat} disabled={searching}>
-                새 대화
-              </button>
+              {confirmNew && !searching ? (
+                <>
+                  대화 기록을 모두 지울까요?
+                  <button
+                    id="new-chat-confirm"
+                    className="link-btn danger"
+                    onClick={() => {
+                      setConfirmNew(false);
+                      onNewChat();
+                    }}
+                  >
+                    지우기
+                  </button>
+                  <button className="link-btn" onClick={() => setConfirmNew(false)}>
+                    취소
+                  </button>
+                </>
+              ) : (
+                <>
+                  이전 대화 {done.length}개를 이어서 검색합니다
+                  <button id="new-chat-btn" className="link-btn" onClick={() => setConfirmNew(true)} disabled={searching}>
+                    새 대화
+                  </button>
+                </>
+              )}
             </span>
           )}
         </div>

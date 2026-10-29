@@ -1719,6 +1719,9 @@ body.resizing video {
 .ctx-chip .link-btn {
   font-size: 11px;
 }
+.ctx-chip .link-btn.danger {
+  color: var(--danger);
+}
 .more-btn {
   margin-top: 10px;
 }
