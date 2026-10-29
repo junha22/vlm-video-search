@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { api, formatTime, type Clip, type Health, type HistoryItem, type ModelInfo, type Usage, type Video } from "@/lib/api";
+import { api, formatTime, type Clip, type Health, type HistoryItem, type ModelInfo, type Quota, type Usage, type Video } from "@/lib/api";
 import Splitter from "@/components/Splitter";
 import Sidebar, { type View } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
@@ -41,6 +41,7 @@ export default function Home() {
   const [expansion, setExpansion] = useState(true);
   const [numClips, setNumClips] = useState(3);
   const [usage, setUsage] = useState<Usage | null>(null);
+  const [quota, setQuota] = useState<Quota | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [connected, setConnected] = useState<boolean | null>(null);
 
@@ -79,6 +80,7 @@ export default function Home() {
     }).catch(() => setConnected(false));
     api.models().then(setModels).catch(() => {});
     api.usage().then(setUsage).catch(() => {});
+    api.quota().then(setQuota).catch(() => {});
     api.videos().then(setVideos).catch(() => {});
   }, []);
 
@@ -168,7 +170,7 @@ export default function Home() {
   // more: "다른 후보 보기" - 이전에 추천한 구간을 빼고 새 후보만 받음
   const runSearch = async (intent: string, queries: string[] | null, more = false) => {
     if (selectedIds.length === 0) {
-      toast("검색할 영상이 없습니다. 왼쪽 패널에서 영상을 추가하고 선택해주세요.", "info");
+      toast("검색할 영상이 없습니다. 영상 소스 패널에서 영상을 추가하고 선택해주세요.", "info");
       return;
     }
     // 이전 대화: 의도 + 추천했던 구간 + 👍/👎 → AI 가 후속 요청을 이어서 해석하고 같은 후보를 반복하지 않도록
@@ -217,13 +219,14 @@ export default function Home() {
                 clips,
                 model: modelLabel,
                 content: clips.length
-                  ? `${selectedIds.length}개 영상에서 ${clips.length}개의 추천 클립을 찾았습니다. 오른쪽 패널에서 미리보기 후 IN/OUT을 조정해 보세요.`
+                  ? `${selectedIds.length}개 영상에서 ${clips.length}개의 추천 클립을 찾았습니다. 추천 클립 패널에서 미리보기 후 IN/OUT을 조정해 보세요.`
                   : "의도에 맞는 구간을 찾지 못했습니다. 다른 표현으로 다시 시도해 보세요.",
               }
             : x,
         ),
       );
       setUsage(res.usage);
+      if (res.quota) setQuota(res.quota);
       if (clips.length) {
         setActiveMsgId(botId);
         setActiveClipId(clips[0].id);
@@ -232,6 +235,7 @@ export default function Home() {
     } catch (e) {
       setMessages((m) => m.map((x) => (x.id === botId ? { ...x, loading: false, error: (e as Error).message } : x)));
       api.usage().then(setUsage).catch(() => {});
+      api.quota().then(setQuota).catch(() => {});
     } finally {
       setSearching(false);
     }
@@ -315,6 +319,7 @@ export default function Home() {
               onRerun={(intent, queries) => runSearch(intent, queries)}
               onMore={(m) => runSearch(m.intent ?? "", m.queries?.length ? m.queries : null, true)}
               onNewChat={newChat}
+              quota={quota}
               onShowClips={showClips}
               activeMsgId={activeMsgId}
               searching={searching}

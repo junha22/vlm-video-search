@@ -5,3 +5,4 @@ venv/
 *.exe
 backend/usage.json
 backend/feedback.jsonl
+backend/videos.json

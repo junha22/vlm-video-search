@@ -18,6 +18,8 @@
   STATIC_DIR        정적 빌드한 프론트엔드 폴더 (기본: frontend/out, 있으면 같은 주소에서 UI 도 제공)
   APP_USERNAME      로그인 아이디 (APP_PASSWORD 와 함께 설정)
   APP_PASSWORD      로그인 비밀번호. 설정하면 로그인 화면이 켜지고, 비우면 로그인 없이 사용 (로컬 실행 기본값)
+  DAILY_SEARCH_LIMIT_PER_USER  브라우저(로그인) 당 하루 검색 횟수, 0 이면 제한 없음
+  DAILY_SEARCH_LIMIT_TOTAL     서비스 전체 하루 검색 횟수 (Gemini 무료 한도 보호), 0 이면 제한 없음
 """
 
 import hashlib
@@ -26,6 +28,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -74,6 +77,11 @@ LOGIN_WINDOW = 600      # 10분 동안
 LOGIN_MAX_FAILS = 10    # IP 당 실패 10번까지 허용
 LOGIN_FAILS: dict = {}  # ip -> [실패 시각]
 
+# 하루 검색 횟수 제한 (한국 시간 자정에 초기화)
+DAILY_LIMIT_PER_USER = int(os.environ.get("DAILY_SEARCH_LIMIT_PER_USER") or 0)
+DAILY_LIMIT_TOTAL = int(os.environ.get("DAILY_SEARCH_LIMIT_TOTAL") or 0)
+SEARCH_COUNTS = {"day": "", "total": 0, "users": {}}
+
 ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v"}
 MAX_VIDEOS_PER_SEARCH = 10      # Gemini 가 한 요청에서 받는 유튜브 링크 최대 개수
 GEMINI_FILE_TTL = 47 * 3600     # Gemini Files API 는 업로드 48시간 뒤 파일을 자동 삭제
@@ -92,6 +100,8 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FEEDBACK_PATH = DATA_DIR / "feedback.jsonl"
 USAGE_PATH = DATA_DIR / "usage.json"
+VIDEOS_PATH = DATA_DIR / "videos.json"
+BUSY_STATUSES = {"queued", "downloading", "uploading", "processing"}
 
 
 def load_usage() -> dict:
@@ -129,6 +139,41 @@ def save_usage():
         print(f"[USAGE SAVE ERROR] {e}")
 
 
+def save_videos():
+    """영상 목록을 디스크에 저장 → 서버를 재시작·업데이트해도 목록이 유지됨 (STATE_LOCK 안에서 호출)"""
+    try:
+        temp_file = VIDEOS_PATH.with_suffix(".tmp")
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(list(VIDEOS.values()), f, ensure_ascii=False)
+        temp_file.replace(VIDEOS_PATH)
+    except Exception as e:
+        print(f"[VIDEOS SAVE ERROR] {e}")
+
+
+def load_videos() -> dict:
+    """저장된 영상 목록 복원. 처리 도중 재시작된 영상은 이어서 처리할 수 없으므로 오류로 표시"""
+    if not VIDEOS_PATH.exists():
+        return {}
+    try:
+        with open(VIDEOS_PATH, "r", encoding="utf-8") as f:
+            items = json.load(f)
+    except Exception:
+        return {}
+    videos = {}
+    for v in items if isinstance(items, list) else []:
+        if not isinstance(v, dict) or not v.get("id"):
+            continue
+        for key, default in (("youtube_id", None), ("gemini_name", None), ("uploaded_at", None),
+                             ("local_path", None), ("error", None), ("selected", True)):
+            v.setdefault(key, default)
+        if v["local_path"] and not os.path.exists(v["local_path"]):
+            v["local_path"] = None  # 재부팅으로 임시 파일이 지워짐 → 검색은 되지만 미리보기·클립 다운로드는 불가
+        if v.get("status") in BUSY_STATUSES:
+            v.update(status="error", selected=False, error="서버가 재시작되어 처리가 중단되었습니다. 삭제 후 다시 추가해주세요.")
+        videos[v["id"]] = v
+    return videos
+
+
 MODELS = [
     {"id": "gemini-3.1-pro", "label": "Gemini 3.1 Pro", "desc": "최고 정확도 · 복잡한 의도 분석 · 유료 키 전용"},
     {"id": "gemini-3.8-flash", "label": "Gemini 3.8 Flash", "desc": "빠른 속도 · 균형 잡힌 성능"},
@@ -145,7 +190,8 @@ DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 # ----------------- 상태 관리 (단일 사용자 로컬 실행 기준) -----------------
 STATE_LOCK = threading.Lock()
-VIDEOS: dict = {}  # id -> {id, name, source, local_path, youtube_id, gemini_name, uploaded_at, status, error, selected, created_at}
+VIDEOS: dict = load_videos()  # id -> {id, name, source, local_path, youtube_id, gemini_name, uploaded_at, status, error, selected, created_at}
+save_videos()
 USAGE = load_usage()
 if not USAGE_PATH.exists():
     save_usage()
@@ -308,20 +354,66 @@ def expire_stale_videos():
                 expired.append(dict(v))
                 v.update(gemini_name=None, local_path=None, status="error", selected=False,
                          error="업로드 후 48시간이 지나 Gemini 파일이 만료되었습니다. 삭제 후 다시 추가해주세요.")
+        if expired:
+            save_videos()
     for v in expired:
         cleanup_video(v)
 
 
+def _sign(payload):
+    return hmac.new(SESSION_KEY, payload.encode(), hashlib.sha256).hexdigest()
+
+
 def make_session():
-    exp = str(int(time.time()) + SESSION_DAYS * 86400)
-    return f"{exp}.{hmac.new(SESSION_KEY, exp.encode(), hashlib.sha256).hexdigest()}"
+    """만료시각.브라우저ID.서명 - 브라우저 ID 로 같은 계정을 쓰는 사람들의 검색 횟수를 따로 셈"""
+    payload = f"{int(time.time()) + SESSION_DAYS * 86400}.{secrets.token_hex(8)}"
+    return f"{payload}.{_sign(payload)}"
 
 
 def valid_session(token):
-    exp, _, sig = (token or "").partition(".")
-    if not exp.isdigit() or int(exp) < time.time():
+    parts = (token or "").split(".")
+    if len(parts) != 3 or not parts[0].isdigit() or int(parts[0]) < time.time():
         return False
-    return hmac.compare_digest(sig, hmac.new(SESSION_KEY, exp.encode(), hashlib.sha256).hexdigest())
+    return hmac.compare_digest(parts[2], _sign(f"{parts[0]}.{parts[1]}"))
+
+
+def user_key(request):
+    """검색 횟수를 셀 기준: 로그인했으면 브라우저 ID, 아니면 IP"""
+    token = request.cookies.get(SESSION_COOKIE)
+    if AUTH_ENABLED and valid_session(token):
+        return "s:" + token.split(".")[1]
+    return "ip:" + (request.client.host if request.client else "?")
+
+
+def _kst_today():
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() + 9 * 3600))
+
+
+def _roll_day():
+    if SEARCH_COUNTS["day"] != _kst_today():
+        SEARCH_COUNTS.update(day=_kst_today(), total=0, users={})
+
+
+def quota_info(key):
+    with STATE_LOCK:
+        _roll_day()
+        used = SEARCH_COUNTS["users"].get(key, 0)
+    if not DAILY_LIMIT_PER_USER:
+        return {"limit": 0, "used": used, "remaining": None}
+    return {"limit": DAILY_LIMIT_PER_USER, "used": used, "remaining": max(0, DAILY_LIMIT_PER_USER - used)}
+
+
+def take_search_quota(key):
+    """검색 1회 차감. 한 사람이 Gemini 무료 한도를 다 쓰지 않도록 개인·전체 하루 횟수를 제한"""
+    with STATE_LOCK:
+        _roll_day()
+        used = SEARCH_COUNTS["users"].get(key, 0)
+        if DAILY_LIMIT_TOTAL and SEARCH_COUNTS["total"] >= DAILY_LIMIT_TOTAL:
+            raise HTTPException(429, f"오늘 서비스 전체 검색 한도({DAILY_LIMIT_TOTAL}회)에 도달했습니다. 내일 다시 이용해주세요.")
+        if DAILY_LIMIT_PER_USER and used >= DAILY_LIMIT_PER_USER:
+            raise HTTPException(429, f"오늘 검색 횟수({DAILY_LIMIT_PER_USER}회)를 모두 사용했습니다. 내일 다시 이용해주세요.")
+        SEARCH_COUNTS["users"][key] = used + 1
+        SEARCH_COUNTS["total"] += 1
 
 
 def parse_json(text):
@@ -388,6 +480,7 @@ def _set(vid_id, **kwargs):
     with STATE_LOCK:
         if vid_id in VIDEOS:
             VIDEOS[vid_id].update(kwargs)
+            save_videos()
 
 
 def _unique_name(name, exclude=None):
@@ -412,6 +505,7 @@ def _new_video(name, source, local_path=None, youtube_id=None, with_file=True):
     }
     with STATE_LOCK:
         VIDEOS[vid_id] = vid
+        save_videos()
     return vid
 
 
@@ -419,10 +513,10 @@ def _new_video(name, source, local_path=None, youtube_id=None, with_file=True):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    # 서버 종료 시 남아있는 모든 원격/로컬 파일 정리
-    for vid in list(VIDEOS.values()):
-        cleanup_video(vid)
-    VIDEOS.clear()
+    # 영상 목록은 videos.json 에 남겨 재시작 후에도 이어서 쓰므로 종료 시 파일을 지우지 않음
+    # (Gemini 파일은 48시간 뒤 자동 삭제되고, 사용자가 영상을 삭제하면 즉시 정리됨)
+    with STATE_LOCK:
+        save_videos()
 
 
 app = FastAPI(title="Intent-based Clip Recommendation API", lifespan=lifespan)
@@ -572,8 +666,15 @@ def get_usage():
     return USAGE
 
 
+@app.get("/api/quota")
+def get_quota(request: Request):
+    return quota_info(user_key(request))
+
+
 @app.post("/api/usage/reset")
 def reset_usage():
+    if AUTH_ENABLED:
+        raise HTTPException(403, "여러 사람이 함께 쓰는 서버에서는 사용량을 초기화할 수 없습니다.")
     with STATE_LOCK:
         USAGE["total_tokens"] = 0
         USAGE["prompt_tokens"] = 0
@@ -641,6 +742,7 @@ def select_video(vid_id: str, req: SelectReq):
 def delete_video(vid_id: str):
     with STATE_LOCK:
         vid = VIDEOS.pop(vid_id, None)
+        save_videos()
     if not vid:
         raise HTTPException(404, "영상을 찾을 수 없습니다.")
     cleanup_video(vid)
@@ -747,16 +849,18 @@ def build_context_block(history, more):
 
 
 @app.post("/api/search")
-def search(req: SearchReq):
+def search(req: SearchReq, request: Request):
     if req.model not in MODEL_IDS:
         raise HTTPException(400, "지원하지 않는 모델입니다.")
     expire_stale_videos()
     targets = [VIDEOS[i] for i in req.video_ids if i in VIDEOS and VIDEOS[i]["status"] == "ready"]
     if not targets:
-        raise HTTPException(400, "검색 가능한(처리 완료된) 영상이 없습니다. 왼쪽 패널에서 영상을 추가하고 선택해주세요.")
+        raise HTTPException(400, "검색 가능한(처리 완료된) 영상이 없습니다. 영상 소스 패널에서 영상을 추가하고 선택해주세요.")
     if len(targets) > MAX_VIDEOS_PER_SEARCH:
-        raise HTTPException(400, f"한 번에 최대 {MAX_VIDEOS_PER_SEARCH}개 영상까지 검색할 수 있습니다. 왼쪽 패널에서 선택을 줄여주세요.")
+        raise HTTPException(400, f"한 번에 최대 {MAX_VIDEOS_PER_SEARCH}개 영상까지 검색할 수 있습니다. 영상 소스 패널에서 선택을 줄여주세요.")
 
+    key = user_key(request)
+    take_search_quota(key)
     client = get_client()
     is_agentic = (req.model == "gemini-3.8-flash-agentic")
 
@@ -880,7 +984,7 @@ def search(req: SearchReq):
         for i, c in enumerate(clips):
             c["rank"] = i + 1
 
-    return {"expanded_queries": queries, "clips": clips, "usage": USAGE}
+    return {"expanded_queries": queries, "clips": clips, "usage": USAGE, "quota": quota_info(key)}
 
 
 # ----------------- 정적 프론트엔드 (단일 서버 배포) -----------------

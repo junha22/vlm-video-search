@@ -46,6 +46,14 @@ export interface SearchResult {
   expanded_queries: string[];
   clips: Clip[];
   usage: Usage;
+  quota?: Quota;
+}
+
+/** 하루 검색 횟수 (limit 0 이면 제한 없음) */
+export interface Quota {
+  limit: number;
+  used: number;
+  remaining: number | null;
 }
 
 export interface Health {
@@ -95,7 +103,7 @@ export const api = {
   health: () => request<Health>("/api/health"),
   models: () => request<ModelInfo[]>("/api/models"),
   usage: () => request<Usage>("/api/usage"),
-  resetUsage: () => request<Usage>("/api/usage/reset", { method: "POST" }),
+  quota: () => request<Quota>("/api/quota"),
   videos: () => request<Video[]>("/api/videos"),
   upload: (files: File[]) => {
     const fd = new FormData();

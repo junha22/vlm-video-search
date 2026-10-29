@@ -121,7 +121,7 @@ export default function ClipPanel({
           <span className="lock-icon">🔒</span>
           <div className="lock-info">
             <strong>3단계: 추천 결과 대기</strong>
-            <p>왼쪽에서 영상을 선택하고 가운데에서 검색을 진행하면 추천 클립이 표시됩니다.</p>
+            <p>영상을 선택하고 대화형 검색에서 검색하면 추천 클립이 표시됩니다.</p>
           </div>
         </div>
       )}

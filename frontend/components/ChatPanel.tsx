@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatTime, type Clip } from "@/lib/api";
+import { formatTime, type Clip, type Quota } from "@/lib/api";
 import { IconEdit, IconLogo, IconPlus, IconRefresh, IconSend, IconShuffle, IconSparkles, IconX } from "./Icons";
 
 export interface Message {
@@ -156,6 +156,7 @@ export default function ChatPanel({
   onRerun,
   onMore,
   onNewChat,
+  quota,
   onShowClips,
   activeMsgId,
   searching,
@@ -170,6 +171,7 @@ export default function ChatPanel({
   onRerun: (intent: string, queries: string[]) => void;
   onMore: (msg: Message) => void;
   onNewChat: () => void;
+  quota?: Quota | null;
   onShowClips: (msgId: string, clipId?: string) => void;
   activeMsgId: string | null;
   searching: boolean;
@@ -227,7 +229,7 @@ export default function ChatPanel({
           <span className="lock-icon">🔒</span>
           <div className="lock-info">
             <strong>1단계: 영상 소스 준비 필요</strong>
-            <p>왼쪽 패널에서 유튜브 링크를 추가하거나 파일을 업로드하고, 검색할 영상을 체크해주세요.</p>
+            <p>영상 소스 패널에서 유튜브 링크를 추가하거나 파일을 업로드하고, 검색할 영상을 체크해주세요.</p>
           </div>
         </div>
       )}
@@ -322,7 +324,7 @@ export default function ChatPanel({
             disabled={locked}
             placeholder={
               locked
-                ? "왼쪽 패널에서 검색할 영상을 먼저 추가해주세요"
+                ? "검색할 영상을 먼저 추가해주세요"
                 : messages.length
                 ? "후속 질문을 입력하세요 (예: 좀 더 짧은 컷으로, 야간 장면은 제외)"
                 : "예: 부대 홍보영상 도입부에 쓸 활기찬 훈련 장면"
@@ -344,6 +346,11 @@ export default function ChatPanel({
           <span>
             대상 영상 <b>{selectedCount}</b>개
           </span>
+          {quota?.limit ? (
+            <span className={quota.remaining === 0 ? "quota-out" : undefined} title="한국 시간 자정에 다시 채워집니다">
+              오늘 남은 검색 <b>{quota.remaining}</b>/{quota.limit}회
+            </span>
+          ) : null}
           {done.length > 0 && (
             <span className="ctx-chip">
               {confirmNew && !searching ? (

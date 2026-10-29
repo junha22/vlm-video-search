@@ -1722,6 +1722,33 @@ body.resizing video {
 .ctx-chip .link-btn.danger {
   color: var(--danger);
 }
+.quota-out,
+.quota-out b {
+  color: var(--danger);
+}
+.composer-hint {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* ---------- Phone ---------- */
+@media (max-width: 600px) {
+  .topbar {
+    padding: 0 14px;
+  }
+  .tb-title span {
+    display: none; /* 부제목은 숨겨 제목·모델 선택이 한 줄에 들어가게 */
+  }
+  .dd-label {
+    max-width: 130px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .workspace {
+    padding: 10px;
+  }
+}
 .more-btn {
   margin-top: 10px;
 }
