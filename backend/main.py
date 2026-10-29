@@ -865,6 +865,21 @@ def search(req: SearchReq):
             "matched_query": c.get("matched_query"),
         })
 
+    if req.more:
+        # AI 가 지시를 어기고 이전 구간을 다시 내놓는 경우가 있어, 절반 이상 겹치는 후보는 직접 제외
+        prev = [(c.video_name, c.start_time, c.end_time) for h in req.history for c in h.clips]
+
+        def overlaps_prev(clip):
+            length = max(clip["end_time"] - clip["start_time"], 0.1)
+            return any(
+                name == clip["video_name"] and max(0.0, min(clip["end_time"], e) - max(clip["start_time"], s)) / length > 0.5
+                for name, s, e in prev
+            )
+
+        clips = [c for c in clips if not overlaps_prev(c)]
+        for i, c in enumerate(clips):
+            c["rank"] = i + 1
+
     return {"expanded_queries": queries, "clips": clips, "usage": USAGE}
 
 
