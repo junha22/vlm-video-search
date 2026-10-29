@@ -54,6 +54,13 @@ export interface Health {
   ffmpeg: boolean;
   youtube_mode?: "download" | "url";
   max_upload_mb?: number;
+  auth?: boolean;
+}
+
+export interface HistoryItem {
+  intent: string;
+  summary?: string;
+  clips?: { video_name: string; start_time: number; end_time: number; feedback?: "good" | "bad" | null }[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -62,6 +69,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(`${API_BASE}${path}`, init);
   } catch {
     throw new Error("백엔드 서버에 연결할 수 없습니다. (uvicorn 서버가 실행 중인지 확인하세요)");
+  }
+  if (res.status === 401 && !path.startsWith("/api/login") && typeof window !== "undefined") {
+    // 로그인 세션이 없거나 만료됨 → 로그인 화면으로
+    window.location.href = "/login";
   }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
@@ -101,9 +112,12 @@ export const api = {
     use_expansion: boolean;
     video_ids: string[];
     queries?: string[] | null;
-    history: { intent: string; summary?: string }[];
+    history: HistoryItem[];
     num_clips?: number;
+    more?: boolean;
   }) => request<SearchResult>("/api/search", json(body)),
+  login: (username: string, password: string) => request<{ ok: boolean }>("/api/login", json({ username, password })),
+  logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST" }),
   feedback: (body: {
     intent: string;
     video_name: string;

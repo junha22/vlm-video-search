@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatTime, type Clip } from "@/lib/api";
-import { IconEdit, IconLogo, IconPlus, IconRefresh, IconSend, IconSparkles, IconX } from "./Icons";
+import { IconEdit, IconLogo, IconPlus, IconRefresh, IconSend, IconShuffle, IconSparkles, IconX } from "./Icons";
 
 export interface Message {
   id: string;
@@ -154,6 +154,8 @@ export default function ChatPanel({
   onExpansionChange,
   onSubmit,
   onRerun,
+  onMore,
+  onNewChat,
   onShowClips,
   activeMsgId,
   searching,
@@ -166,6 +168,8 @@ export default function ChatPanel({
   onExpansionChange: (v: boolean) => void;
   onSubmit: (intent: string) => void;
   onRerun: (intent: string, queries: string[]) => void;
+  onMore: (msg: Message) => void;
+  onNewChat: () => void;
   onShowClips: (msgId: string, clipId?: string) => void;
   activeMsgId: string | null;
   searching: boolean;
@@ -187,6 +191,10 @@ export default function ChatPanel({
     ta.style.height = "0px";
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }, [text]);
+
+  // 이어서 검색할 때 AI 에 넘어가는 이전 대화 수, "다른 후보 보기"는 마지막 결과에만 표시
+  const done = messages.filter((m) => m.role === "assistant" && m.intent && !m.loading && !m.error);
+  const lastDoneId = done.length ? done[done.length - 1].id : null;
 
   const submit = (value?: string) => {
     if (locked) return;
@@ -283,6 +291,16 @@ export default function ChatPanel({
                             ))}
                           </div>
                         )}
+                        {m.id === lastDoneId && (
+                          <button
+                            className="btn btn-ghost btn-sm more-btn"
+                            disabled={searching || locked}
+                            onClick={() => onMore(m)}
+                            title="이번에 추천한 구간을 빼고 다른 후보를 찾습니다"
+                          >
+                            <IconShuffle size={13} /> 다른 후보 보기
+                          </button>
+                        )}
                         {m.model && <div className="msg-foot">{m.model}</div>}
                       </>
                     )}
@@ -325,6 +343,14 @@ export default function ChatPanel({
           <span>
             대상 영상 <b>{selectedCount}</b>개
           </span>
+          {done.length > 0 && (
+            <span className="ctx-chip">
+              이전 대화 {done.length}개를 이어서 검색합니다
+              <button className="link-btn" onClick={onNewChat} disabled={searching}>
+                새 대화
+              </button>
+            </span>
+          )}
         </div>
       </div>
     </section>

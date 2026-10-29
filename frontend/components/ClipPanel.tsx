@@ -216,11 +216,14 @@ export default function ClipPanel({
                       <div className="clip-name" title={c.video_name}>
                         {c.video_name}
                       </div>
+                      {/* 넓으면 한 줄, 좁으면 IN / OUT 두 줄 (shell.css 컨테이너 쿼리) */}
                       <div className="clip-time mono">
-                        <span className="tc in">IN {formatTime(c.start_time)}</span>
-                        <span className="arrow">→</span>
-                        <span className="tc out">OUT {formatTime(c.end_time)}</span>
-                        <span className="muted">· {(c.end_time - c.start_time).toFixed(1)}s</span>
+                        <span className="tc-range">
+                          <span className="tc in">IN {formatTime(c.start_time)}</span>
+                          <span className="arrow">→</span>
+                          <span className="tc out">OUT {formatTime(c.end_time)}</span>
+                        </span>
+                        <span className="muted tc-dur">· {(c.end_time - c.start_time).toFixed(1)}s</span>
                       </div>
                     </div>
                     <span className={`badge ${confClass(c.confidence)}`}>신뢰도 {c.confidence}</span>

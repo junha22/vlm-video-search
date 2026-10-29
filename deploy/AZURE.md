@@ -3,7 +3,7 @@
 카드 없이 12개월 무료 VM(B2ats v2: CPU 2개 · 메모리 1GB) 한 대에 프론트엔드와 백엔드를 함께 올립니다.
 
 ```
-브라우저 ──HTTPS + 비밀번호──▶ Caddy ──▶ FastAPI (127.0.0.1:8000)
+브라우저 ──HTTPS──▶ Caddy ──▶ FastAPI (127.0.0.1:8000) · 로그인 화면(쿠키 세션)
                                           ├─ /api/...   백엔드
                                           └─ /          정적 프론트엔드 (frontend/out)
 ```
@@ -46,7 +46,7 @@ bash ~/intentcut/deploy/setup.sh                  # 주소: <IP>.sslip.io
 bash ~/intentcut/deploy/setup.sh <이름>.koreacentral.cloudapp.azure.com
 ```
 
-실행 중에 Gemini API 키, 접속 아이디, 접속 비밀번호를 차례로 묻습니다.
+실행 중에 Gemini API 키, 로그인 아이디, 로그인 비밀번호를 차례로 묻습니다.
 
 ## 3. 프론트엔드 올리기 (PC의 PowerShell에서)
 
@@ -59,14 +59,14 @@ scp -i $HOME\.ssh\intentcut_key.pem -r out azureuser@<공용IP>:~/intentcut/fron
 ssh -i $HOME\.ssh\intentcut_key.pem azureuser@<공용IP> "sudo systemctl restart intentcut"
 ```
 
-이제 `https://<주소>`로 접속하면 비밀번호 창이 뜹니다. 휴대폰 LTE로 외부 접속도 확인해 보세요.
+이제 `https://<주소>`로 접속하면 로그인 화면이 나옵니다. 휴대폰 LTE로 외부 접속도 확인해 보세요.
 
 ## 업데이트
 
 - **백엔드 코드가 바뀌면**: 서버에서 `bash ~/intentcut/deploy/update.sh`를 실행합니다.
 - **화면 코드가 바뀌면**: 3번을 다시 합니다.
 - **설정을 바꾸려면**: 서버에서 `nano ~/intentcut/.env`로 수정한 뒤 `sudo systemctl restart intentcut`을 실행합니다.
-- **비밀번호를 바꾸려면**: `bash ~/intentcut/deploy/setup.sh`를 다시 실행합니다.
+- **아이디·비밀번호를 바꾸려면**: `bash ~/intentcut/deploy/setup.sh`를 다시 실행합니다. 바꾸면 기존 로그인은 모두 풀립니다.
 
 ## 문제 해결
 

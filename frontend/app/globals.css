@@ -8,8 +8,8 @@
   --panel: #131318;
   --panel-2: #18181f;
   --panel-hover: #1d1d25;
-  --border: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.12);
+  --border: rgba(var(--fg-rgb), 0.06);
+  --border-strong: rgba(var(--fg-rgb), 0.12);
 
   --text: #ececf1;
   --text-2: #b4b4c0;
@@ -43,6 +43,75 @@
   --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", monospace;
 
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* 테마별로 바뀌는 값 (기본: 다크) */
+  color-scheme: dark;
+  --fg-rgb: 255, 255, 255; /* 표면 위 반투명 틴트 색 */
+  --accent-text: #a5a3ff;
+  --accent-text-2: #b9b7ff;
+  --accent-glow: #a5a3ff;
+  --danger-text: #fda4af;
+  --in-text: #67e8f9;
+  --out-text: #d8b4fe;
+  --heading-grad: linear-gradient(180deg, #ffffff 20%, #9898a8 100%);
+  --panel-glass: rgba(19, 19, 24, 0.78);
+  --topbar-bg: rgba(9, 9, 12, 0.6);
+  --menu-bg: rgba(22, 22, 28, 0.96);
+  --banner-bg: rgba(24, 25, 36, 0.95);
+  --toast-bg: rgba(24, 24, 31, 0.95);
+  --inset-bg: rgba(0, 0, 0, 0.25);
+  --composer-fade: rgba(0, 0, 0, 0.15);
+  --player-empty-bg: linear-gradient(180deg, #101015, #0b0b0f);
+  --playhead: #fff;
+  --shadow-lg: 0 24px 60px -12px rgba(0, 0, 0, 0.8);
+}
+
+/* 라이트 테마 (상단 해/달 버튼 · 첫 방문은 운영체제 설정을 따름) */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f5f9;
+  --bg-elev: #ffffff;
+  --sidebar: #eceef4;
+  --panel: #ffffff;
+  --panel-2: #f7f8fb;
+  --panel-hover: #eef0f6;
+  --border: rgba(20, 20, 45, 0.09);
+  --border-strong: rgba(20, 20, 45, 0.17);
+
+  --text: #17171f;
+  --text-2: #464655;
+  --muted: #6b6b7a;
+  --faint: #9696a4;
+
+  --accent-soft: rgba(109, 106, 248, 0.12);
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.1);
+  --warn: #b45309;
+  --warn-soft: rgba(217, 119, 6, 0.12);
+  --danger: #e11d48;
+  --danger-soft: rgba(225, 29, 72, 0.09);
+
+  --shadow: 0 10px 30px -12px rgba(20, 20, 45, 0.18);
+  --shadow-glow: 0 0 0 1px var(--accent-ring), 0 8px 24px -10px rgba(109, 106, 248, 0.35);
+
+  --fg-rgb: 20, 20, 45;
+  --accent-text: #4f46e5;
+  --accent-text-2: #5b52e6;
+  --accent-glow: #4f46e5;
+  --danger-text: #be123c;
+  --in-text: #0e7490;
+  --out-text: #7e22ce;
+  --heading-grad: linear-gradient(180deg, #17171f 20%, #55556a 100%);
+  --panel-glass: rgba(255, 255, 255, 0.88);
+  --topbar-bg: rgba(244, 245, 249, 0.8);
+  --menu-bg: rgba(255, 255, 255, 0.98);
+  --banner-bg: rgba(255, 255, 255, 0.96);
+  --toast-bg: rgba(255, 255, 255, 0.98);
+  --inset-bg: rgba(20, 20, 45, 0.04);
+  --composer-fade: rgba(20, 20, 45, 0.03);
+  --player-empty-bg: linear-gradient(180deg, #eceef5, #e2e5ee);
+  --playhead: #17171f;
+  --shadow-lg: 0 24px 60px -12px rgba(20, 20, 45, 0.28);
 }
 
 * {
@@ -89,7 +158,7 @@ a {
 
 ::selection {
   background: var(--accent-soft);
-  color: #fff;
+  color: var(--text);
 }
 
 /* Scrollbar */
@@ -101,11 +170,11 @@ a {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--fg-rgb), 0.08);
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(var(--fg-rgb), 0.16);
 }
 
 /* =========================================================
@@ -140,12 +209,12 @@ a {
 }
 
 .btn-ghost {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(var(--fg-rgb), 0.04);
   border: 1px solid var(--border);
   color: var(--text-2);
 }
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(var(--fg-rgb), 0.08);
   color: var(--text);
   border-color: var(--border-strong);
 }
@@ -168,7 +237,7 @@ a {
   transition: all 0.2s var(--ease);
 }
 .btn-icon:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
   color: var(--text);
 }
 
@@ -223,10 +292,10 @@ a {
 }
 .badge-accent {
   background: var(--accent-soft);
-  color: #a5a3ff;
+  color: var(--accent-text);
 }
 .badge-muted {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(var(--fg-rgb), 0.06);
   color: var(--text-2);
 }
 
@@ -241,7 +310,7 @@ a {
   width: 36px;
   height: 20px;
   border-radius: 99px;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(var(--fg-rgb), 0.12);
   transition: background 0.25s var(--ease);
   flex-shrink: 0;
 }
@@ -269,7 +338,7 @@ a {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(var(--fg-rgb), 0.15);
   border-top-color: currentColor;
   animation: spin 0.8s linear infinite;
   flex-shrink: 0;
@@ -323,7 +392,7 @@ a {
 }
 
 .skeleton {
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.03) 25%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.03) 75%);
+  background: linear-gradient(90deg, rgba(var(--fg-rgb), 0.03) 25%, rgba(var(--fg-rgb), 0.08) 50%, rgba(var(--fg-rgb), 0.03) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.6s infinite;
   border-radius: var(--radius-sm);

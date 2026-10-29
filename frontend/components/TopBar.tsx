@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { formatNumber, type ModelInfo, type Usage } from "@/lib/api";
-import { IconCheck, IconChevronDown, IconCpu } from "./Icons";
+import { api, type ModelInfo, type Usage } from "@/lib/api";
+import { IconCheck, IconChevronDown, IconCpu, IconLogout } from "./Icons";
+import ThemeToggle from "./ThemeToggle";
 
 export function ModelDropdown({
   models,
@@ -68,6 +69,7 @@ export default function TopBar({
   models,
   model,
   onModelChange,
+  auth = false,
 }: {
   title: string;
   subtitle: string;
@@ -76,6 +78,7 @@ export default function TopBar({
   models: ModelInfo[];
   model: string;
   onModelChange: (id: string) => void;
+  auth?: boolean;
 }) {
   return (
     <header className="topbar">
@@ -91,6 +94,18 @@ export default function TopBar({
           </div>
         )}
         {models.length > 0 && <ModelDropdown models={models} value={model} onChange={onModelChange} />}
+        <ThemeToggle />
+        {auth && (
+          <button
+            id="logout-btn"
+            className="btn-icon"
+            title="로그아웃"
+            aria-label="로그아웃"
+            onClick={() => api.logout().finally(() => (window.location.href = "/login"))}
+          >
+            <IconLogout size={16} />
+          </button>
+        )}
       </div>
     </header>
   );

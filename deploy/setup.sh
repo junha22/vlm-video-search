@@ -73,21 +73,28 @@ sudo systemctl daemon-reload
 sudo systemctl enable intentcut >/dev/null 2>&1
 sudo systemctl restart intentcut
 
-echo "==> [6/6] HTTPS 주소 + 접속 비밀번호 (Caddy)"
+echo "==> [6/6] 로그인 계정 + HTTPS 주소 (Caddy)"
 if [ -z "$DOMAIN" ]; then
   IP="$(curl -fsS https://api.ipify.org)"
   DOMAIN="${IP//./-}.sslip.io"
 fi
-read -rp "    접속 아이디 [admin]: " AUTH_USER
+read -rp "    로그인 아이디 [admin]: " AUTH_USER
 AUTH_USER="${AUTH_USER:-admin}"
-read -rsp "    접속 비밀번호 (화면에 표시되지 않음): " AUTH_PW; echo
-HASH="$(caddy hash-password --plaintext "$AUTH_PW")"
+AUTH_PW=""
+while [ -z "$AUTH_PW" ]; do
+  read -rsp "    로그인 비밀번호 (화면에 표시되지 않음): " AUTH_PW; echo
+done
+case "$AUTH_USER$AUTH_PW" in
+  *"'"*) echo "    아이디·비밀번호에는 작은따옴표(')를 쓸 수 없습니다. 다시 실행해주세요."; exit 1 ;;
+esac
+# 로그인 화면은 앱(FastAPI)이 처리 → 계정은 .env 에 저장 (기존 값은 교체)
+grep -v -E '^(APP_USERNAME|APP_PASSWORD)=' "$APP_DIR/.env" > "$APP_DIR/.env.tmp" || true
+printf "APP_USERNAME='%s'\nAPP_PASSWORD='%s'\n" "$AUTH_USER" "$AUTH_PW" >> "$APP_DIR/.env.tmp"
+mv "$APP_DIR/.env.tmp" "$APP_DIR/.env"
+chmod 600 "$APP_DIR/.env"
 sudo tee /etc/caddy/Caddyfile >/dev/null <<EOF
 $DOMAIN {
 	encode zstd gzip
-	basic_auth {
-		$AUTH_USER $HASH
-	}
 	request_body {
 		max_size 210MB
 	}
@@ -95,6 +102,7 @@ $DOMAIN {
 }
 EOF
 sudo systemctl restart caddy
+sudo systemctl restart intentcut
 
 echo
 echo "완료!  https://$DOMAIN   (아이디: $AUTH_USER)"

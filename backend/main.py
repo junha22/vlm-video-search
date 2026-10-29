@@ -16,8 +16,12 @@
   FFMPEG_THREADS    클립 인코딩 스레드 수 (저사양 서버는 1 권장), 비우면 ffmpeg 기본값
   DATA_DIR          usage.json / feedback.jsonl 저장 위치 (기본: backend/)
   STATIC_DIR        정적 빌드한 프론트엔드 폴더 (기본: frontend/out, 있으면 같은 주소에서 UI 도 제공)
+  APP_USERNAME      로그인 아이디 (APP_PASSWORD 와 함께 설정)
+  APP_PASSWORD      로그인 비밀번호. 설정하면 로그인 화면이 켜지고, 비우면 로그인 없이 사용 (로컬 실행 기본값)
 """
 
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -39,7 +43,7 @@ import yt_dlp
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
@@ -58,6 +62,17 @@ if not FFMPEG_THREADS.isdigit():
     FFMPEG_THREADS = ""
 DATA_DIR = Path(os.environ.get("DATA_DIR") or ROOT_DIR / "backend")
 STATIC_DIR = Path(os.environ.get("STATIC_DIR") or ROOT_DIR / "frontend" / "out")
+
+# 로그인: 쿠키 세션 (서명 키는 계정 정보에서 만들어서, 비밀번호를 바꾸면 기존 로그인이 모두 풀림)
+APP_USERNAME = (os.environ.get("APP_USERNAME") or "").strip()
+APP_PASSWORD = os.environ.get("APP_PASSWORD") or ""
+AUTH_ENABLED = bool(APP_PASSWORD)
+SESSION_COOKIE = "intentcut_session"
+SESSION_DAYS = 30
+SESSION_KEY = hashlib.sha256(f"intentcut|{APP_USERNAME}|{APP_PASSWORD}|{API_KEY}".encode()).digest()
+LOGIN_WINDOW = 600      # 10분 동안
+LOGIN_MAX_FAILS = 10    # IP 당 실패 10번까지 허용
+LOGIN_FAILS: dict = {}  # ip -> [실패 시각]
 
 ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".avi", ".webm", ".mkv", ".m4v"}
 MAX_VIDEOS_PER_SEARCH = 10      # Gemini 가 한 요청에서 받는 유튜브 링크 최대 개수
@@ -297,6 +312,18 @@ def expire_stale_videos():
         cleanup_video(v)
 
 
+def make_session():
+    exp = str(int(time.time()) + SESSION_DAYS * 86400)
+    return f"{exp}.{hmac.new(SESSION_KEY, exp.encode(), hashlib.sha256).hexdigest()}"
+
+
+def valid_session(token):
+    exp, _, sig = (token or "").partition(".")
+    if not exp.isdigit() or int(exp) < time.time():
+        return False
+    return hmac.compare_digest(sig, hmac.new(SESSION_KEY, exp.encode(), hashlib.sha256).hexdigest())
+
+
 def parse_json(text):
     cleaned = text.replace("```json", "").replace("```", "").strip()
     start, end = cleaned.find("{"), cleaned.rfind("}")
@@ -411,7 +438,22 @@ async def limit_upload_size(request: Request, call_next):
     return await call_next(request)
 
 
-# CORS 는 위 미들웨어보다 나중에 추가해야 바깥에서 감싸서 413 응답에도 CORS 헤더가 붙음
+PUBLIC_PATHS = {"/login", "/api/login", "/api/logout", "/api/health", "/favicon.ico"}
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    """APP_PASSWORD 가 설정된 경우에만 동작: 로그인 쿠키가 없으면 API 는 401, 화면은 /login 으로 이동"""
+    path = request.url.path
+    if (not AUTH_ENABLED or request.method == "OPTIONS" or path in PUBLIC_PATHS
+            or path.startswith("/_next/") or valid_session(request.cookies.get(SESSION_COOKIE))):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse(status_code=401, content={"detail": "로그인이 필요합니다."})
+    return RedirectResponse("/login", status_code=303)
+
+
+# CORS 는 위 미들웨어들보다 나중에 추가해야 바깥에서 감싸서 413·401 응답에도 CORS 헤더가 붙음
 allowed = os.environ.get("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -430,9 +472,17 @@ class SelectReq(BaseModel):
     selected: bool
 
 
+class HistoryClip(BaseModel):
+    video_name: str
+    start_time: float
+    end_time: float
+    feedback: Optional[str] = None  # "good" | "bad" | None
+
+
 class HistoryItem(BaseModel):
     intent: str
     summary: Optional[str] = None
+    clips: List[HistoryClip] = []  # 이전에 추천한 구간과 사용자의 👍/👎
 
 
 class SearchReq(BaseModel):
@@ -443,6 +493,12 @@ class SearchReq(BaseModel):
     queries: Optional[List[str]] = None  # 사용자가 수정한 확장 질의 (있으면 그대로 사용)
     history: List[HistoryItem] = []
     num_clips: int = 3
+    more: bool = False  # "다른 후보 보기": 이전 추천 구간을 제외하고 새 후보만
+
+
+class LoginReq(BaseModel):
+    username: str = ""
+    password: str = ""
 
 
 class FeedbackReq(BaseModel):
@@ -462,7 +518,48 @@ def health():
         "ffmpeg": bool(shutil.which(FFMPEG_BIN) or os.path.exists(FFMPEG_BIN)),
         "youtube_mode": YOUTUBE_MODE,
         "max_upload_mb": MAX_UPLOAD_MB,
+        "auth": AUTH_ENABLED,
     }
+
+
+@app.get("/login", include_in_schema=False)
+def login_page(request: Request):
+    if not AUTH_ENABLED or valid_session(request.cookies.get(SESSION_COOKIE)):
+        return RedirectResponse("/", status_code=303)
+    page = STATIC_DIR / "login.html"
+    if not page.is_file():
+        raise HTTPException(404, "로그인 화면(frontend/out/login.html)이 없습니다. npm run build:static 후 다시 올려주세요.")
+    return FileResponse(page)
+
+
+@app.post("/api/login")
+def login(req: LoginReq, request: Request):
+    if not AUTH_ENABLED:
+        return {"ok": True}
+    ip = request.client.host if request.client else "?"
+    now = time.time()
+    fails = [t for t in LOGIN_FAILS.get(ip, []) if now - t < LOGIN_WINDOW]
+    if len(fails) >= LOGIN_MAX_FAILS:
+        raise HTTPException(429, "로그인 시도가 너무 많습니다. 10분 뒤에 다시 시도해주세요.")
+    user_ok = hmac.compare_digest(req.username.strip().encode(), APP_USERNAME.encode()) if APP_USERNAME else True
+    pass_ok = hmac.compare_digest(req.password.encode(), APP_PASSWORD.encode())
+    if not (user_ok and pass_ok):
+        if len(LOGIN_FAILS) > 10000:
+            LOGIN_FAILS.clear()
+        LOGIN_FAILS[ip] = fails + [now]
+        raise HTTPException(401, "아이디 또는 비밀번호가 올바르지 않습니다.")
+    LOGIN_FAILS.pop(ip, None)
+    res = JSONResponse({"ok": True})
+    res.set_cookie(SESSION_COOKIE, make_session(), max_age=SESSION_DAYS * 86400, httponly=True,
+                   samesite="lax", secure=request.url.scheme == "https", path="/")
+    return res
+
+
+@app.post("/api/logout")
+def logout():
+    res = JSONResponse({"ok": True})
+    res.delete_cookie(SESSION_COOKIE, path="/")
+    return res
 
 
 @app.get("/api/models")
@@ -600,10 +697,10 @@ def save_feedback(req: FeedbackReq):
 def expand_queries(intent, model, history):
     is_agentic = (model == "gemini-3.8-flash-agentic")
     ctx = "\n".join(f"- {h.intent}" for h in history[-5:])
-    ctx_block = f"[이전 대화 맥락]\n{ctx}\n" if ctx else ""
+    ctx_block = f"[이전 대화 맥락 - 새 의도가 '더 짧게', '다른 분위기로' 같은 후속 요청이면 이전 의도와 합쳐서 확장해]\n{ctx}\n" if ctx else ""
     agentic_guide = "\n다각도 가설 기반으로 시각적 대비(풀샷/클로즈업/동적 모션)를 고려하여 정교하게 확장하라." if is_agentic else ""
     prompt = f"""너는 영상 편집 기획자야. 사용자의 제작 의도(Editing Brief)를 영상에서 실제로 찾을 수 있는
-구체적인 시각적/청각적 장면 묘사 3개로 확장해.{agentic_guide}
+구체적인 시각적/청각적 장면 묘사 3개로 확장해. 3개는 서로 다른 장면·구도가 되도록 해.{agentic_guide}
 {ctx_block}
 [제작 의도] {intent}
 
@@ -611,14 +708,42 @@ def expand_queries(intent, model, history):
 {{"expanded_queries": ["장면 묘사1", "장면 묘사2", "장면 묘사3"]}}"""
 
     if is_agentic:
-        config = types.GenerateContentConfig(temperature=0.3, thinking_config=types.ThinkingConfig(thinking_budget=1024))
+        config = types.GenerateContentConfig(temperature=0.7, thinking_config=types.ThinkingConfig(thinking_budget=1024))
     else:
-        config = {'temperature': 0.4}
+        config = {'temperature': 0.7}
     text = generate_with_retry(model, [prompt], config)
     try:
         return parse_json(text).get("expanded_queries", [])[:5]
     except Exception:
         return []
+
+
+FEEDBACK_MARK = {"good": " 👍", "bad": " 👎"}
+
+
+def build_context_block(history, more):
+    """이전 대화(의도·추천 구간·👍/👎)를 정리 - 후속 요청을 이어서 해석하고 같은 후보가 반복되지 않도록"""
+    turns = []
+    for i, h in enumerate(history[-5:], 1):
+        clips = ", ".join(
+            f"{c.video_name} {c.start_time:.0f}~{c.end_time:.0f}초{FEEDBACK_MARK.get(c.feedback or '', '')}" for c in h.clips
+        )
+        line = f"{i}. 의도: {h.intent}"
+        if clips:
+            line += f"\n   추천했던 구간: {clips}"
+        elif h.summary:
+            line += f" / 결과: {h.summary}"
+        turns.append(line)
+    if not turns:
+        return ""
+    rules = [
+        "- 새 입력이 이전 요청을 고치거나 덧붙이는 후속 요청(예: '더 짧게', '다른 거', '사람 많은 장면으로')이면 이전 의도와 합쳐서 해석해.",
+        "- 👎 표시된 구간과 비슷한 장면은 피하고, 👍 표시된 구간의 특징은 살려.",
+        "- 이전에 추천한 구간을 그대로 다시 추천하지 마. (사용자가 다시 원하는 경우만 예외)",
+    ]
+    if more:
+        rules.append("- 이번 요청은 '다른 후보 보기'야. 위에서 추천했던 구간과 겹치지 않는 새로운 구간만 골라.")
+    return "[이전 대화 맥락]\n" + "\n".join(turns) + "\n[대화 이어가기 규칙]\n" + "\n".join(rules) + "\n"
 
 
 @app.post("/api/search")
@@ -650,9 +775,8 @@ def search(req: SearchReq):
     else:
         expansion_block = "1. 질의 확장: 사용 안함. 입력된 의도 그대로만 탐색하라."
 
-    ctx = "\n".join(f"- 의도: {h.intent}" + (f" / 결과: {h.summary}" if h.summary else "") for h in req.history[-5:])
     video_list = "\n".join(f"- [영상 {i}] {v['name']}" for i, v in enumerate(targets, 1))
-    ctx_block = f"[이전 대화 맥락 - 후속 질문이면 이를 반영해]\n{ctx}\n" if ctx else ""
+    ctx_block = build_context_block(req.history, req.more)
 
     agentic_block = """
 [에이전틱 자기 검증(Self-Reflection) 필수]
@@ -660,12 +784,17 @@ def search(req: SearchReq):
 - 2단계 비판적 재검토: 각 후보 컷의 구도, 인물, 속도감이 [제작 의도]에 완벽히 부합하는지 자기 비판(Critique)한다.
 - 3단계 최종 엄선: 모호하거나 부합하지 않는 컷은 배제하고 최고 순위만 선별한다.
 """ if is_agentic else ""
+    diversity_block = """
+[후보 다양성]
+- 추천 클립끼리 구도(풀샷·미디엄·클로즈업), 움직임, 분위기가 서로 겹치지 않게 다양하게 골라.
+- 영상이 여러 개면 가능한 한 여러 영상에서 고르고, 시간 구간이 서로 겹치는 클립은 피해.
+"""
 
     prompt = f"""너는 최고 수준의 영상 편집자이자 AI 분석가야.
 사용자의 [제작 의도: {req.intent}]를 바탕으로, 첨부된 영상들에서 가장 완벽하게 부합하는 클립을 추천해야 해.
 각 영상 바로 앞에 '[영상 번호] 이름' 라벨을 붙여 첨부했고, 순서대로 다음과 같아:
 {video_list}
-{ctx_block}{agentic_block}
+{ctx_block}{agentic_block}{diversity_block}
 다음 순서대로 생각하고 분석해:
 {expansion_block}
 2. 컷 탐색: 확장된 장면들이 각 영상의 몇 분 몇 초(타임스탬프)에 등장하는지 면밀히 스캔해.
@@ -701,13 +830,15 @@ def search(req: SearchReq):
     contents.append(prompt)
 
     # 2~3단계: 컷 탐색 + 최종 추천 (에이전틱 모델일 경우 Thinking Budget 활성화)
+    # temperature 를 0.2 → 0.7 로 올려 매번 같은 후보만 나오지 않게 하고, "다른 후보 보기"는 더 다양하게
+    temperature = 1.0 if req.more else 0.7
     if is_agentic:
         config = types.GenerateContentConfig(
-            temperature=0.2,
+            temperature=temperature,
             thinking_config=types.ThinkingConfig(thinking_budget=2048)
         )
     else:
-        config = {'temperature': 0.2}
+        config = {'temperature': temperature}
 
     text = generate_with_retry(req.model, contents, config)
     try:

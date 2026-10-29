@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, formatTime, type Clip, type Health, type ModelInfo, type Usage, type Video } from "@/lib/api";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { api, formatTime, type Clip, type Health, type HistoryItem, type ModelInfo, type Usage, type Video } from "@/lib/api";
+import Splitter from "@/components/Splitter";
 import Sidebar, { type View } from "@/components/Sidebar";
 import TopBar from "@/components/TopBar";
 import SourcePanel from "@/components/SourcePanel";
@@ -19,6 +20,12 @@ const FALLBACK_MODELS: ModelInfo[] = [
 const DEFAULT_MODEL = "gemini-3.1-flash-lite";
 
 const BUSY = new Set(["queued", "downloading", "uploading", "processing"]);
+
+// 패널 너비 (px): 기본값 · 최소/최대. 가운데 대화 패널은 남는 공간을 쓰되 최소 360px 유지
+const COLS_KEY = "intentcut:cols";
+const DEFAULT_COLS = { left: 300, right: 380 };
+const COL_LIMITS = { left: [220, 480], right: [300, 720], center: 360 } as const;
+const clampNum = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 interface Toast {
@@ -44,6 +51,8 @@ export default function Home() {
   const [playNonce, setPlayNonce] = useState(0);
   const [searching, setSearching] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [cols, setCols] = useState(DEFAULT_COLS);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const loaded = useRef(false);
 
   const toast = useCallback((text: string, kind: Toast["kind"] = "error") => {
@@ -59,6 +68,8 @@ export default function Home() {
       if (saved.model) setModel(saved.model);
       if (typeof saved.expansion === "boolean") setExpansion(saved.expansion);
       if (saved.numClips) setNumClips(saved.numClips);
+      const savedCols = JSON.parse(localStorage.getItem(COLS_KEY) || "null");
+      if (savedCols?.left && savedCols?.right) setCols({ left: savedCols.left, right: savedCols.right });
     } catch {}
     loaded.current = true;
 
@@ -74,6 +85,24 @@ export default function Home() {
   useEffect(() => {
     if (loaded.current) localStorage.setItem("intentcut:prefs", JSON.stringify({ model, expansion, numClips }));
   }, [model, expansion, numClips]);
+
+  useEffect(() => {
+    if (loaded.current) localStorage.setItem(COLS_KEY, JSON.stringify(cols));
+  }, [cols]);
+
+  // ---------- 패널 너비 조절 ----------
+  const resizeCol = (side: "left" | "right", dx: number) => {
+    setCols((c) => {
+      const total = workspaceRef.current?.clientWidth ?? Infinity;
+      const other = side === "left" ? c.right : c.left;
+      const [min, max] = COL_LIMITS[side];
+      // 가운데 패널이 최소 너비 아래로 줄지 않도록 (양쪽 여백 + 손잡이 2개 = 약 56px)
+      const room = total - other - COL_LIMITS.center - 56;
+      const next = side === "left" ? c.left + dx : c.right - dx;
+      return { ...c, [side]: clampNum(next, min, Math.max(min, Math.min(max, room))) };
+    });
+  };
+  const resetCol = (side: "left" | "right") => setCols((c) => ({ ...c, [side]: DEFAULT_COLS[side] }));
 
   // ---------- 처리 중인 영상 상태 폴링 ----------
   const anyBusy = videos.some((v) => BUSY.has(v.status));
@@ -136,23 +165,30 @@ export default function Home() {
   const modelLabel = models.find((m) => m.id === model)?.label ?? model;
 
   // ---------- 검색 ----------
-  const runSearch = async (intent: string, queries: string[] | null) => {
+  // more: "다른 후보 보기" - 이전에 추천한 구간을 빼고 새 후보만 받음
+  const runSearch = async (intent: string, queries: string[] | null, more = false) => {
     if (selectedIds.length === 0) {
       toast("검색할 영상이 없습니다. 왼쪽 패널에서 영상을 추가하고 선택해주세요.", "info");
       return;
     }
-    const history = messages
+    // 이전 대화: 의도 + 추천했던 구간 + 👍/👎 → AI 가 후속 요청을 이어서 해석하고 같은 후보를 반복하지 않도록
+    const history: HistoryItem[] = messages
       .filter((m) => m.role === "assistant" && m.intent && !m.error && !m.loading)
       .map((m) => ({
         intent: m.intent!,
-        summary: (m.clips ?? []).map((c) => `${c.video_name} ${Math.round(c.start_time)}~${Math.round(c.end_time)}초`).join(", "),
+        clips: (m.clips ?? []).map((c) => ({
+          video_name: c.video_name,
+          start_time: c.start_time,
+          end_time: c.end_time,
+          feedback: c.feedback ?? null,
+        })),
       }));
 
     const useExp = queries ? true : expansion;
     const userMsg: Message = {
       id: uid(),
       role: "user",
-      content: queries ? `↻ 수정된 질의로 재검색 — ${queries.join(" / ")}` : intent,
+      content: more ? "↻ 다른 후보 보기" : queries ? `↻ 수정된 질의로 재검색 — ${queries.join(" / ")}` : intent,
     };
     const botId = uid();
     const botMsg: Message = { id: botId, role: "assistant", content: "", intent, loading: true, startedAt: Date.now(), usedExpansion: useExp };
@@ -168,6 +204,7 @@ export default function Home() {
         queries,
         history,
         num_clips: numClips,
+        more,
       });
       const clips = res.clips.map((c) => ({ ...c, feedback: null }));
       setMessages((m) =>
@@ -198,6 +235,13 @@ export default function Home() {
     } finally {
       setSearching(false);
     }
+  };
+
+  const newChat = () => {
+    if (searching) return;
+    setMessages([]);
+    setActiveMsgId(null);
+    setActiveClipId(null);
   };
 
   // ---------- 클립 ----------
@@ -244,9 +288,14 @@ export default function Home() {
           models={models}
           model={model}
           onModelChange={setModel}
+          auth={!!health?.auth}
         />
         {view === "dashboard" ? (
-          <div className="workspace">
+          <div
+            className="workspace"
+            ref={workspaceRef}
+            style={{ "--col-left": `${cols.left}px`, "--col-right": `${cols.right}px` } as CSSProperties}
+          >
             <SourcePanel
               videos={videos}
               onAddYoutube={addYoutube}
@@ -257,12 +306,15 @@ export default function Home() {
               youtubeMode={health?.youtube_mode}
               maxUploadMb={health?.max_upload_mb}
             />
+            <Splitter label="영상 소스 패널 너비" onDrag={(dx) => resizeCol("left", dx)} onReset={() => resetCol("left")} />
             <ChatPanel
               messages={messages}
               expansion={expansion}
               onExpansionChange={setExpansion}
               onSubmit={(intent) => runSearch(intent, null)}
               onRerun={(intent, queries) => runSearch(intent, queries)}
+              onMore={(m) => runSearch(m.intent ?? "", m.queries?.length ? m.queries : null, true)}
+              onNewChat={newChat}
               onShowClips={showClips}
               activeMsgId={activeMsgId}
               searching={searching}
@@ -270,6 +322,7 @@ export default function Home() {
               modelLabel={modelLabel}
               locked={selectedIds.length === 0}
             />
+            <Splitter label="추천 클립 패널 너비" onDrag={(dx) => resizeCol("right", dx)} onReset={() => resetCol("right")} />
             <ClipPanel
               clips={activeClips}
               videos={videos}

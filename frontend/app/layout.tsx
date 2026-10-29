@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono, Noto_Sans_KR } from "next/font/google";
 import "./globals.css";
 import "./shell.css";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 const notoKr = Noto_Sans_KR({ variable: "--font-noto-kr", subsets: ["latin"], weight: ["400", "500", "600", "700", "800"] });
@@ -14,7 +15,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="ko" className={`${inter.variable} ${notoKr.variable} ${jetbrains.variable}`}>
+    // data-theme 은 아래 스크립트가 화면을 그리기 전에 넣으므로 hydration 경고를 끔
+    <html lang="ko" className={`${inter.variable} ${notoKr.variable} ${jetbrains.variable}`} suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>{children}</body>
     </html>
   );

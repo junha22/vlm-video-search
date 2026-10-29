@@ -173,3 +173,29 @@ export const IconLogo = ({ size = 28 }: { size?: number }) => (
     <path d="M24.5 8v16" stroke="#fff" strokeOpacity=".35" strokeWidth="2" strokeLinecap="round" strokeDasharray="2 3" />
   </svg>
 );
+
+export const IconSun = ({ size, ...p }: P) => (
+  <svg {...base(size)} {...p}>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+  </svg>
+);
+
+export const IconMoon = ({ size, ...p }: P) => (
+  <svg {...base(size)} {...p}>
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+  </svg>
+);
+
+export const IconLogout = ({ size, ...p }: P) => (
+  <svg {...base(size)} {...p}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <path d="M16 17l5-5-5-5M21 12H9" />
+  </svg>
+);
+
+export const IconShuffle = ({ size, ...p }: P) => (
+  <svg {...base(size)} {...p}>
+    <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+  </svg>
+);
